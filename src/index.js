@@ -20,7 +20,10 @@ import { CheckInByLicensePlateCommandHandler } from "./application/handlers/comm
 import { CreateReservationCommand } from "./domain/commands/CreateReservationCommand.js";
 import { CreateReservationCommandHandler } from "./application/handlers/command-handlers/CreateReservationCommandHandler.js";
 
-dotenv.config();
+// dotenv.config();
+if (process.env.NODE_ENV !== 'production') {
+    dotenv.config();
+}
 console.log("[DEBUG] Loaded SUPABASE_URL:", process.env.SUPABASE_URL);
 const app = express();
 app.use(express.json());
@@ -29,9 +32,17 @@ app.use(express.json());
 //  CORS Configuration
 // =================================================================
 // 2. ตั้งค่า Options
+// const corsOptions = {
+//   origin: "http://localhost:4200", // อนุญาตเฉพาะ Angular App ของคุณ
+// };
+
+const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:4200";
+
 const corsOptions = {
-  origin: "http://localhost:4200", // อนุญาตเฉพาะ Angular App ของคุณ
+  origin: ALLOWED_ORIGIN, // ใช้ค่าที่มาจาก Railway (หรือ Localhost ถ้าเป็น Local)
 };
+console.log(`[DEBUG] CORS enabled for: ${ALLOWED_ORIGIN}`);
+
 // 3. ใช้งาน CORS Middleware (ต้องอยู่ก่อน Routes ทั้งหมด)
 app.use(cors(corsOptions));
 // =================================================================
