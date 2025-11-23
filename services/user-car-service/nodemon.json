@@ -1,0 +1,6 @@
+{
+  "watch": ["src/"],
+  "ext": "js,mjs,json",
+  "ignore": ["*.test.js", "*.log", "temp/"],
+  "exec": "node --env-file=.env src/index.js"
+}

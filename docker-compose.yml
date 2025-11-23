@@ -1,0 +1,35 @@
+# /docker-compose.yml
+
+version: "3.8"
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: "rabbitmq"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ~/.docker-conf/rabbitmq/data/:/var/lib/rabbitmq/
+      - ~/.docker-conf/rabbitmq/log/:/var/log/rabbitmq
+    networks:
+      - parking_network
+
+  # หมายเหตุ: การใช้ Supabase ผ่าน Docker CLI จะซับซ้อนกว่า
+  # สำหรับการพัฒนานี้ เราจะใช้ RabbitMQ จาก Docker และเชื่อมต่อกับ Supabase Cloud Project
+  # หากต้องการรัน Postgres เอง สามารถเพิ่ม service นี้ได้
+  # db:
+  #   image: postgres:15
+  #   container_name: postgres_db
+  #   restart: always
+  #   environment:
+  #     POSTGRES_USER: youruser
+  #     POSTGRES_PASSWORD: yourpassword
+  #     POSTGRES_DB: yourdb
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     - parking_network
+
+networks:
+  parking_network:
+    driver: bridge

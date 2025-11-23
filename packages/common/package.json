@@ -1,0 +1,24 @@
+{
+  "name": "@parking-reservation/common",
+  "version": "1.0.0",
+  "description": "Shared infrastructure code for parking reservation microservices",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    "./messaging/RabbitMQAdapter": "./src/infrastructure/messaging/RabbitMQAdapter.js",
+    "./persistence/SupabaseEventStore": "./src/infrastructure/persistence/SupabaseEventStore.js",
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "amqplib": "^0.10.3",
+    "winston": "^3.18.3"
+  },
+  "keywords": [
+    "microservices",
+    "infrastructure",
+    "shared"
+  ],
+  "author": "",
+  "license": "ISC"
+}
