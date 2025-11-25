@@ -12,6 +12,7 @@ export class ReservationProjection {
   /**
    * จัดการ Event เมื่อมีการสร้างการจองใหม่
    * บันทึกข้อมูลลงตาราง reservations
+   * แปลง composite time components กลับเป็น UTC ISO String
    */
   async handleReservationCreated(event) {
     const {
@@ -19,9 +20,12 @@ export class ReservationProjection {
       userId,
       slotId,
       status,
-      startTime,
-      endTime,
-      reservedAt,
+      startDateLocal,
+      startTimeLocal,
+      timeZoneOffset,
+      endDateLocal,
+      endTimeLocal,
+      createdAt,
       parkingSiteId,
       floorId 
     } = event;
@@ -29,6 +33,11 @@ export class ReservationProjection {
     console.log(
       `[ReservationProjection] Projecting ReservationCreatedEvent for reservation: ${reservationId}`
     );
+
+    // แปลงกลับเป็น UTC ISO String สำหรับ Read Model
+    const startTimeUTC = new Date(`${startDateLocal}T${startTimeLocal}${timeZoneOffset}`).toISOString();
+    const endTimeUTC = new Date(`${endDateLocal}T${endTimeLocal}${timeZoneOffset}`).toISOString();
+    const reservedAtUTC = new Date(createdAt * 1000).toISOString(); // Convert unix timestamp to ISO
 
     const { error } = await this.supabase
       .from(this.tableName)
@@ -39,9 +48,9 @@ export class ReservationProjection {
         floor_id: floorId,
         slot_id: slotId,
         status: status || 'pending',
-        start_time: startTime,
-        end_time: endTime,
-        reserved_at: reservedAt,
+        start_time: startTimeUTC,    // 👈 UTC ISO String สำหรับ SQL queries
+        end_time: endTimeUTC,        // 👈 UTC ISO String สำหรับ SQL queries
+        reserved_at: reservedAtUTC,  // 👈 UTC ISO String
         version: 1,
         updated_at: new Date()
       });

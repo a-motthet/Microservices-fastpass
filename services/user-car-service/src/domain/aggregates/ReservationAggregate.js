@@ -16,8 +16,20 @@ export class ReservationAggregate {
     this.userId = null;
     this.slotId = null;
     this.status = null;
-    this.startTime = null;
-    this.endTime = null;
+    
+    // Start Time Components
+    this.startTimeStamp = null;
+    this.startDateLocal = null;
+    this.startTimeLocal = null;
+    
+    // End Time Components
+    this.endTimeStamp = null;
+    this.endDateLocal = null;
+    this.endTimeLocal = null;
+    
+    // Timezone
+    this.timeZoneOffset = null;
+    
     this.parkingSiteId = null;
     this.floorId = null;
     this.version = 0;
@@ -36,25 +48,40 @@ export class ReservationAggregate {
     if (
       !command.userId ||
       !command.slotId ||
-      !command.startTime ||
-      !command.endTime ||
+      !command.startDateLocal ||
+      !command.startTimeLocal ||
+      !command.endDateLocal ||
+      !command.endTimeLocal ||
+      !command.timeZoneOffset ||
       !command.parkingSiteId ||
       !command.floorId
     ) {
       throw new Error("Missing required reservation details in command.");
     }
-    if (new Date(command.startTime) >= new Date(command.endTime)) {
+    
+    // Validate time logic
+    const startDate = new Date(`${command.startDateLocal}T${command.startTimeLocal}${command.timeZoneOffset}`);
+    const endDate = new Date(`${command.endDateLocal}T${command.endTimeLocal}${command.timeZoneOffset}`);
+    
+    if (startDate >= endDate) {
       throw new Error("End time must be after start time.");
     }
     // --- End Business Rules ---
+
+    const createdAt = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
 
     const event = new ReservationCreatedEvent(
       this.id,
       command.userId,
       command.slotId,
-      new Date(), // reservedAt timestamp
-      command.startTime,
-      command.endTime,
+      command.startTimeStamp || Math.floor(startDate.getTime() / 1000),
+      command.startDateLocal,
+      command.startTimeLocal,
+      command.endTimeStamp || Math.floor(endDate.getTime() / 1000),
+      command.endDateLocal,
+      command.endTimeLocal,
+      command.timeZoneOffset,
+      createdAt,
       command.parkingSiteId,
       command.floorId
     );
@@ -124,8 +151,8 @@ export class ReservationAggregate {
     }
     // Check if it's plain data (rehydration)
     else if (typeof event === "object" && event !== null) {
-      // Infer type from properties (adjust if event structure differs)
-      if (event.slotId && event.startTime)
+      // Infer type from properties
+      if (event.slotId && event.startDateLocal)
         eventType = "ReservationCreatedEvent";
       else if (event.newStatus) eventType = "ParkingStatusUpdatedEvent";
       else eventType = "UnknownEvent";
@@ -145,8 +172,18 @@ export class ReservationAggregate {
         this.userId = data.userId;
         this.slotId = data.slotId;
         this.status = data.status || "pending";
-        this.startTime = data.startTime;
-        this.endTime = data.endTime;
+        
+        // Store as composite components
+        this.startTimeStamp = data.startTimeStamp;
+        this.startDateLocal = data.startDateLocal;
+        this.startTimeLocal = data.startTimeLocal;
+        
+        this.endTimeStamp = data.endTimeStamp;
+        this.endDateLocal = data.endDateLocal;
+        this.endTimeLocal = data.endTimeLocal;
+        
+        this.timeZoneOffset = data.timeZoneOffset;
+        
         this.parkingSiteId = data.parkingSiteId; 
         this.floorId = data.floorId; 
         break;
@@ -171,8 +208,18 @@ export class ReservationAggregate {
       userId: this.userId,
       slotId: this.slotId,
       status: this.status,
-      startTime: this.startTime,
-      endTime: this.endTime,
+      
+      // Time as composite components
+      startTimeStamp: this.startTimeStamp,
+      startDateLocal: this.startDateLocal,
+      startTimeLocal: this.startTimeLocal,
+      
+      endTimeStamp: this.endTimeStamp,
+      endDateLocal: this.endDateLocal,
+      endTimeLocal: this.endTimeLocal,
+      
+      timeZoneOffset: this.timeZoneOffset,
+      
       parkingSiteId: this.parkingSiteId,
       floorId: this.floorId,
       // Version is stored on the snapshot record itself
@@ -187,12 +234,8 @@ export class ReservationAggregate {
     const snapshotData = snapshotRecord.snapshot_data;
     if (!snapshotData) return;
 
-    // Restore state from snapshot data
-    this.userId = snapshotData.userId;
-    this.slotId = snapshotData.slotId;
-    this.status = snapshotData.status;
-    this.startTime = snapshotData.startTime;
-    this.endTime = snapshotData.endTime;
+    this.timeZoneOffset = snapshotData.timeZoneOffset;
+    
     this.parkingSiteId = snapshotData.parkingSiteId;
     this.floorId = snapshotData.floorId;
 

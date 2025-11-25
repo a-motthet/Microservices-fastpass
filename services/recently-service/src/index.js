@@ -12,6 +12,42 @@ import { EventConsumer } from "./projections/EventConsumer.js";
 const app = express();
 app.use(express.json());
 
+
+// =================================================================
+//  TIME FORMATTING HELPER
+// =================================================================
+
+/**
+ * Helper: แปลง UTC Date เป็น Format ที่ต้องการ
+ * @param {string} utcDateString - เวลาจาก DB (ISO)
+ * @param {string} timeZone - เช่น 'Asia/Bangkok'
+ * @param {number} offsetMinutes - เช่น 420
+ */
+function formatToCustomDate(utcDateString, timeZone, offsetMinutes) {
+  if (!utcDateString) return null;
+  
+  const dateObj = new Date(utcDateString);
+  
+  // 1. Unix Timestamp (Seconds) - เป็นตัวเลข
+  const timeStamp = Math.floor(dateObj.getTime() / 1000);
+
+  // 2. Local Date & Time Strings
+  const dateLocal = dateObj.toLocaleDateString('en-CA', { timeZone }); // YYYY-MM-DD
+  const timeLocal = dateObj.toLocaleTimeString('en-GB', { timeZone }); // HH:mm:ss
+
+  // 3. Offset String
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const hours = Math.floor(Math.abs(offsetMinutes) / 60).toString().padStart(2, '0');
+  const mins = (Math.abs(offsetMinutes) % 60).toString().padStart(2, '0');
+  const timeZoneOffset = `${sign}${hours}:${mins}`;
+
+  return { timeStamp, dateLocal, timeLocal, timeZoneOffset };
+}
+
+// Timezone Configuration for Thailand
+const TIME_ZONE = 'Asia/Bangkok';
+const TIME_ZONE_OFFSET_MINUTES = 420; // UTC+07:00
+
 // --- Dependency Injection & Setup ---
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -45,7 +81,16 @@ app.get("/recent-activity/:userId", async (req, res) => {
       throw error;
     }
 
-    res.status(200).json(data);
+    // Format time fields in the response
+    const formattedData = data.map(activity => ({
+      ...activity,
+      created_at: formatToCustomDate(activity.created_at, TIME_ZONE, TIME_ZONE_OFFSET_MINUTES),
+      updated_at: formatToCustomDate(activity.updated_at, TIME_ZONE, TIME_ZONE_OFFSET_MINUTES),
+      start_time: formatToCustomDate(activity.start_time, TIME_ZONE, TIME_ZONE_OFFSET_MINUTES),
+      end_time: formatToCustomDate(activity.end_time, TIME_ZONE, TIME_ZONE_OFFSET_MINUTES)
+    }));
+
+    res.status(200).json(formattedData);
   } catch (error) {
     console.error(
       `[Error] Fetching recent activity for user ${userId}:`,

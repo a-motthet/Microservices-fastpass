@@ -5,16 +5,72 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 
+// --- Imports: Commands & Handlers ---
 import { UpdateParkingStatusCommand } from "./domain/commands/UpdateParkingStatusCommand.js";
 import { UpdateParkingStatusCommandHandler } from "./application/handlers/command-handlers/UpdateParkingStatusCommandHandler.js";
+
 import { CheckInByLicensePlateCommand } from "./domain/commands/CheckInByLicensePlateCommand.js";
 import { CheckInByLicensePlateCommandHandler } from "./application/handlers/command-handlers/CheckInByLicensePlateCommandHandler.js";
-import { CreateReservationCommandHandler } from "./application/handlers/command-handlers/CreateReservationCommandHandler.js";
+
 import { CreateReservationCommand } from "./domain/commands/CreateReservationCommand.js";
-import { SupabaseEventStore, RabbitMQAdapter, createLogger, AppError, errorHandler } from "@parking-reservation/common";
+import { CreateReservationCommandHandler } from "./application/handlers/command-handlers/CreateReservationCommandHandler.js";
+
+// --- Imports: Infrastructure & Projections ---
+// (คง path เดิมตามที่ขอ)
+import { SupabaseEventStore } from "../../../packages/common/src/infrastructure/persistence/SupabaseEventStore.js";
+import { RabbitMQAdapter } from "../../../packages/common/src/infrastructure/messaging/RabbitMQAdapter.js";
 import { EventConsumer } from "./infrastructure/projections/EventConsumer.js";
 
-const logger = createLogger('user-car-service');
+// --- Logger Mock (เพื่อให้ใช้ syntax logger.info ได้เหมือน snippet ที่ให้มา) ---
+const logger = {
+  info: (msg) => console.log(msg),
+  error: (msg, err) => console.error(msg, err),
+};
+
+// =================================================================
+//  TIME FORMATTING HELPERS
+// =================================================================
+
+const TIME_ZONE = 'Asia/Bangkok';
+
+/**
+ * แปลงส่วนประกอบเวลา (Local + Offset) กลับเป็น Date Object (UTC)
+ * เพื่อใช้ในการเปรียบเทียบ Logic (Start < End)
+ */
+function parseCompositeToISO(dateLocal, timeLocal, offset) {
+  // สร้าง ISO String แบบมี Offset: "2025-11-24T09:00:00+07:00"
+  const isoString = `${dateLocal}T${timeLocal}${offset}`;
+  return new Date(isoString);
+}
+
+/**
+ * แปลง UTC Date String จาก Database ให้เป็นส่วนประกอบ (Composite)
+ * เพื่อส่งกลับไปให้ Frontend
+ */
+function formatToCustomDate(utcDateString, timeZone, offsetMinutes) {
+  if (!utcDateString) return null;
+  
+  const dateObj = new Date(utcDateString);
+  
+  // 1. Unix Timestamp (Seconds) - เป็นตัวเลข
+  const timeStamp = Math.floor(dateObj.getTime() / 1000);
+
+  // 2. Local Date & Time Strings
+  const dateLocal = dateObj.toLocaleDateString('en-CA', { timeZone }); // YYYY-MM-DD
+  const timeLocal = dateObj.toLocaleTimeString('en-GB', { timeZone }); // HH:mm:ss
+
+  // 3. Offset String
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const hours = Math.floor(Math.abs(offsetMinutes) / 60).toString().padStart(2, '0');
+  const mins = (Math.abs(offsetMinutes) % 60).toString().padStart(2, '0');
+  const timeZoneOffset = `${sign}${hours}:${mins}`;
+
+  return { timeStamp, dateLocal, timeLocal, timeZoneOffset };
+}
+
+// =================================================================
+//  App Initialization
+// =================================================================
 
 const app = express();
 app.use(express.json());
@@ -26,6 +82,10 @@ const corsOptions = {
   optionsSuccessStatus: 204,
 };
 app.use(cors(corsOptions));
+
+// =================================================================
+//  Dependency Injection & Setup
+// =================================================================
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -51,97 +111,102 @@ const createReservationHandler = new CreateReservationCommandHandler(
 );
 
 // =================================================================
-//  DEBUG ENDPOINT
+//  API Endpoints
 // =================================================================
+
 app.get("/debug-connection", (req, res) => {
   res.status(200).json({
-    message: "This is the configuration my application is currently using.",
-    supabase_url: process.env.SUPABASE_URL,
+    message: "User-Car Service OK",
     port: process.env.PORT,
   });
 });
 
-// =================================================================
-//  API Endpoints
-// =================================================================
-
 /**
  * GET /reservations/availability
  * ดึงสถานะและความว่างของช่องเวลา (Time Slots)
- * Query: ?date=YYYY-MM-DD&parkingSiteId=ps-01&floorId=ps-01-f1
  */
-app.get("/reservations/availability", async (req, res, next) => {
-  const { date, parkingSiteId, floorId } = req.query; // 👈 รับ floorId เพิ่ม
+app.get("/reservations/availability", async (req, res) => {
+  const { date, parkingSiteId, floorId } = req.query;
 
-  // 1. ตรวจสอบ Input
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return next(new AppError("Date parameter is required in YYYY-MM-DD format.", 400));
+    return res.status(400).json({ error: "Date parameter is required in YYYY-MM-DD format." });
   }
   if (!parkingSiteId) {
-    return next(new AppError("parkingSiteId parameter is required.", 400));
+    return res.status(400).json({ error: "parkingSiteId parameter is required." });
   }
 
   try {
-    // 2. 📞 ถาม slot-service: "Site (และ Floor) นี้มีที่จอดทั้งหมดกี่ช่อง?"
+    // 1. ดึงข้อมูล Timezone ของ Site
+    const { data: siteData } = await supabase
+      .from('parking_sites')
+      .select('timezone, timezone_offset')
+      .eq('id', parkingSiteId)
+      .single();
+    
+    const siteTimeZone = siteData?.timezone || TIME_ZONE;
+    const siteOffset = siteData?.timezone_offset || 420;
+
+    // 2. ถาม Capacity จาก slot-service
     let totalCapacity = 0;
     try {
       const slotServiceUrl = process.env.SLOT_SERVICE_URL;
-      if (!slotServiceUrl) throw new Error("SLOT_SERVICE_URL is not configured.");
-
-      // สร้าง URL สำหรับถาม Capacity (ใส่ floorId ไปด้วยถ้ามี)
       let slotQueryUrl = `${slotServiceUrl}/slots?parkingSiteId=${parkingSiteId}`;
-      if (floorId) {
-        slotQueryUrl += `&floorId=${floorId}`;
-      }
-
-      const response = await axios.get(slotQueryUrl);
+      if (floorId) slotQueryUrl += `&floorId=${floorId}`;
       
+      const response = await axios.get(slotQueryUrl);
       totalCapacity = response.data ? response.data.length : 0;
-      logger.info(`[Availability] Capacity for Site:${parkingSiteId}, Floor:${floorId || 'ALL'} = ${totalCapacity}`);
-
+      
       if (totalCapacity === 0) {
-         return next(new AppError(`No slots found for criteria.`, 404));
+         return res.status(404).json({ error: `No slots found.` });
       }
-
     } catch (error) {
-      logger.error(`[Error] Failed to connect to slot-service: ${error.message}`);
-      return next(new AppError("Cannot determine parking capacity.", 500));
+      logger.error(`[Error] Slot Service:`, error.message);
+      return res.status(500).json({ error: "Cannot determine capacity." });
     }
 
-    // 3. สร้าง Array 24 ช่องเวลา
+    // 3. สร้าง Array 24 ช่องเวลา (คำนวณแบบ UTC แล้วแปลงกลับเป็น Composite Format)
     const timeSlots = [];
     const dayStart = new Date(`${date}T00:00:00.000Z`);
     
     for (let i = 0; i < 24; i++) {
-      const slotStartTime = new Date(dayStart);
-      slotStartTime.setUTCHours(i);
-      const slotEndTime = new Date(dayStart);
-      slotEndTime.setUTCHours(i + 1);
+      const slotStart = new Date(dayStart); slotStart.setUTCHours(i);
+      const slotEnd = new Date(dayStart); slotEnd.setUTCHours(i + 1);
       
-      // สร้าง ID (รวม floorId ไปใน ID ด้วยถ้ามี เพื่อความ Unique หรือจะใช้ logic เดิมก็ได้)
+      // แปลงเป็น Format ใหม่
+      const startFmt = formatToCustomDate(slotStart.toISOString(), siteTimeZone, siteOffset);
+      const endFmt = formatToCustomDate(slotEnd.toISOString(), siteTimeZone, siteOffset);
+
+      // Slot ID Logic
       const dateStr = date.replace(/-/g, '');
       const hourStr = i.toString().padStart(2, "0");
-      // ตัวอย่าง ID: S-ps01-20251117-0900 (ถ้าไม่ระบุชั้น) หรือ S-ps01-f1-20251117-0900
-      const slotIdSuffix = floorId ? `-${floorId}` : '';
-      const slotId = `S-${parkingSiteId}${slotIdSuffix}-${dateStr}-${hourStr}00`;
+      const locationPart = floorId ? floorId : parkingSiteId;
+      const slotId = `S-${locationPart}-${dateStr}-${hourStr}00`;
 
-      const displayText = `${hourStr}:00 - ${(i + 1).toString().padStart(2, "0")}:00`;
-      
+      const displayText = `${startFmt.timeLocal.slice(0,5)} - ${endFmt.timeLocal.slice(0,5)}`;
+
       timeSlots.push({
         slotId,
-        startTime: slotStartTime.toISOString(),
-        endTime: slotEndTime.toISOString(),
+        // Flat Structure & Timestamps
+        startTimeStamp: startFmt.timeStamp,
+        startDateLocal: startFmt.dateLocal,
+        startTimeLocal: startFmt.timeLocal,
+        
+        endTimeStamp: endFmt.timeStamp,
+        endDateLocal: endFmt.dateLocal,
+        endTimeLocal: endFmt.timeLocal,
+        
+        timeZoneOffset: startFmt.timeZoneOffset,
+        
         displayText,
         isAvailable: true,
-        totalCapacity: totalCapacity,
+        totalCapacity,
         bookedCount: 0,
         remainingCount: totalCapacity
       });
     }
 
-    // 4. ดึงการจองที่ Active ทั้งหมด (กรองตาม Site และ Floor)
+    // 4. ดึงการจองและคำนวณ
     const dayEnd = new Date(`${date}T23:59:59.999Z`);
-    
     let query = supabase
       .from("reservations")
       .select("start_time, end_time")
@@ -150,154 +215,159 @@ app.get("/reservations/availability", async (req, res, next) => {
       .gt("end_time", dayStart.toISOString())
       .in("status", ["pending", "checked_in"]);
 
-    // 👈 กรอง floor_id เพิ่มเติม ถ้ามีการระบุมา
-    if (floorId) {
-      query = query.eq("floor_id", floorId);
-    }
+    if (floorId) query = query.eq("floor_id", floorId);
 
     const { data: bookedSlots, error } = await query;
-    
     if (error) throw error;
 
-    // 5. 🧠 คำนวณความว่าง
     if (bookedSlots) {
       for (const slot of timeSlots) {
-        const slotStart = new Date(slot.startTime).getTime();
-        const slotEnd = new Date(slot.endTime).getTime();
+        // เปรียบเทียบด้วย Timestamp (เลข) แม่นยำกว่า
+        const slotStartTs = slot.startTimeStamp * 1000;
+        const slotEndTs = slot.endTimeStamp * 1000;
 
         const currentBookingsCount = bookedSlots.filter(booking => {
-          const bookingStart = new Date(booking.start_time).getTime();
-          const bookingEnd = new Date(booking.end_time).getTime();
-          return bookingStart < slotEnd && bookingEnd > slotStart;
+          const bStart = new Date(booking.start_time).getTime();
+          const bEnd = new Date(booking.end_time).getTime();
+          return bStart < slotEndTs && bEnd > slotStartTs;
         }).length;
 
         slot.bookedCount = currentBookingsCount;
         const remaining = totalCapacity - currentBookingsCount;
         slot.remainingCount = remaining > 0 ? remaining : 0;
-
-        if (currentBookingsCount >= totalCapacity) {
-          slot.isAvailable = false;
-        }
+        if (currentBookingsCount >= totalCapacity) slot.isAvailable = false;
       }
     }
 
     res.status(200).json(timeSlots);
 
   } catch (error) {
-    next(error);
+    logger.error(`[Error] GET availability:`, error);
+    res.status(500).json({ error: error.message });
   }
 });
-
-
-/**
- * POST /reservations
- * สร้างการจองใหม่
- */
-app.post("/reservations", async (req, res, next) => {
-  // 1. รับ floorId เพิ่ม
-  const { userId, slotId, startTime, endTime, parkingSiteId, floorId } = req.body;
-
-  logger.info(
-    `[API] Received POST /reservations for user: ${userId}, site: ${parkingSiteId}, floor: ${floorId}`
-  );
-
-  // 2. ตรวจสอบ Input (floorId เป็น required ตามบรีฟล่าสุด)
-  if (!userId || !slotId || !startTime || !endTime || !parkingSiteId || !floorId) {
-    return next(new AppError("userId, slotId, startTime, endTime, parkingSiteId, and floorId are all required.", 400));
-  }
-
-  try {
-    // 3. สร้าง Command (ส่ง floorId ไปด้วย)
-    const command = new CreateReservationCommand(
-      userId,
-      slotId,
-      startTime,
-      endTime,
-      parkingSiteId,
-      floorId // 👈
-    );
-
-    // 4. เรียก Handler
-    const result = await createReservationHandler.handle(command);
-
-    res.status(201).json(result);
-  } catch (error) {
-    next(error);
-  }
-});
-
-
-/**
- * POST /reservations/:id/status
- * อัปเดตสถานะการจอง
- */
-app.post("/reservations/:id/status", async (req, res, next) => {
-  const reservationId = req.params.id;
-  const { status } = req.body;
-  logger.info(
-    `[API] Received POST /reservations/${reservationId}/status with status: ${status}`
-  );
-
-  try {
-    if (!status) {
-      return next(new AppError("Status is required in the request body.", 400));
-    }
-    const command = new UpdateParkingStatusCommand(reservationId, status);
-    await updateParkingStatusHandler.handle(command);
-    res.status(200).json({
-      message: `Reservation ${reservationId} status updated to ${status}`,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
 
 /**
  * GET /reservations/:id
- * ดึงข้อมูล Reservation จาก Read Model
+ * ดึงข้อมูล Reservation (Format Flat JSON + Timestamp)
  */
-app.get("/reservations/:id", async (req, res, next) => {
+app.get("/reservations/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase
       .from("reservations")
-      .select("*")
+      .select(`*, parking_sites ( timezone, timezone_offset )`)
       .eq("id", id)
       .single();
 
-    if (error || !data) {
-      return next(new AppError("Reservation not found", 404));
-    }
-    res.status(200).json(data);
+    if (error || !data) return res.status(404).json({ message: "Reservation not found" });
+
+    const tz = data.parking_sites?.timezone || TIME_ZONE;
+    const offset = data.parking_sites?.timezone_offset || 420;
+
+    const startParts = formatToCustomDate(data.start_time, tz, offset);
+    const endParts = formatToCustomDate(data.end_time, tz, offset);
+    const createdParts = formatToCustomDate(data.created_at || data.reserved_at, tz, offset);
+
+    const response = {
+      reservationId: data.id,
+      spotLocationId: data.slot_id,
+      status: data.status.toUpperCase(),
+      userId: data.user_id,
+      
+      startTimeStamp: startParts.timeStamp,
+      startDateLocal: startParts.dateLocal,
+      startTimeLocal: startParts.timeLocal,
+
+      endTimeStamp: endParts.timeStamp,
+      endDateLocal: endParts.dateLocal,
+      endTimeLocal: endParts.timeLocal,
+
+      timeZoneOffset: startParts.timeZoneOffset,
+      createdAt: createdParts.timeStamp
+    };
+
+    res.status(200).json(response);
   } catch (error) {
-    next(error);
+    res.status(500).json({ error: error.message });
   }
 });
 
+/**
+ * POST /reservations
+ * สร้างการจองใหม่ (รับค่าแบบ Composite)
+ */
+app.post("/reservations", async (req, res) => {
+  const {
+    userId, slotId,
+    startTimeStamp, startDateLocal, startTimeLocal,
+    endTimeStamp, endDateLocal, endTimeLocal,
+    timeZoneOffset,
+    parkingSiteId, floorId
+  } = req.body;
+
+  logger.info(`[API] POST /reservations for user: ${userId}`);
+
+  // 1. Validate Basic Fields
+  if (!userId || !slotId || !startDateLocal || !startTimeLocal ||
+      !endDateLocal || !endTimeLocal || !timeZoneOffset ||
+      !parkingSiteId || !floorId) {
+    return res.status(400).json({ error: "Missing required composite time fields or IDs" });
+  }
+
+  // 2. Validate Logic (Start < End)
+  const startDate = parseCompositeToISO(startDateLocal, startTimeLocal, timeZoneOffset);
+  const endDate = parseCompositeToISO(endDateLocal, endTimeLocal, timeZoneOffset);
+  
+  if (startDate >= endDate) {
+    return res.status(400).json({ error: "End time must be after start time" });
+  }
+
+  try {
+    // 3. ส่ง object ทั้งก้อนนี้ไปให้ CreateReservationCommand
+    // (ต้องแน่ใจว่า CreateReservationCommand.js ถูกแก้ให้รับ object แล้ว)
+    const command = new CreateReservationCommand({
+      userId, slotId,
+      startTimeStamp, startDateLocal, startTimeLocal,
+      endTimeStamp, endDateLocal, endTimeLocal,
+      timeZoneOffset,
+      parkingSiteId, floorId
+    });
+
+    const result = await createReservationHandler.handle(command);
+    res.status(201).json(result);
+  } catch (error) {
+    logger.error(`[Error] POST /reservations:`, error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /reservations/:id/status
+ */
+app.post("/reservations/:id/status", async (req, res) => {
+  const { status } = req.body;
+  try {
+    const command = new UpdateParkingStatusCommand(req.params.id, status);
+    await updateParkingStatusHandler.handle(command);
+    res.status(200).json({ message: "Updated" });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 /**
  * POST /check-ins
- * เช็กอินด้วยป้ายทะเบียน
  */
-app.post("/check-ins", async (req, res, next) => {
-  const { license_plate } = req.body;
-  logger.info(`[API] Received POST /check-ins with license plate: ${license_plate}`);
-
+app.post("/check-ins", async (req, res) => {
   try {
-    const command = new CheckInByLicensePlateCommand(license_plate);
+    const command = new CheckInByLicensePlateCommand(req.body.license_plate);
     const result = await checkInByLicensePlateHandler.handle(command);
     res.status(200).json(result);
   } catch (error) {
-    if (error.message.includes("not found")) {
-      return next(new AppError(error.message, 404));
-    }
-    next(error);
+    res.status(400).json({ error: error.message });
   }
 });
-
-// Global Error Handler
-app.use(errorHandler);
 
 // =================================================================
 //  Server Startup
@@ -308,25 +378,25 @@ const PORT = process.env.PORT || 3003;
 const startServer = async () => {
   try {
     await messageBroker.connect();
-    logger.info("✅ Message Broker connected successfully.");
+    console.log("✅ Message Broker connected successfully.");
 
     const consumer = new EventConsumer(supabase, messageBroker);
     await consumer.start();
-    logger.info("🎧 Event Consumer is running and listening for events.");
+    console.log("🎧 Event Consumer is running and listening for events.");
 
     app.listen(PORT, () => {
-      logger.info(`\n🚀 User-Car Service is running on http://localhost:${PORT}`);
-      logger.info(`   (CORS enabled for: ${corsOptions.origin})`);
+      console.log(`\n🚀 User-Car Service is running on http://localhost:${PORT}`);
+      console.log(`   (CORS enabled for: ${corsOptions.origin})`);
     }).on("error", (error) => {
       if (error.code === "EADDRINUSE") {
-        logger.error(`❌ Port ${PORT} is already in use.`);
+        console.error(`❌ Port ${PORT} is already in use.`);
       } else {
-        logger.error(`❌ Failed to start server on port ${PORT}:`, error);
+        console.error(`❌ Failed to start server on port ${PORT}:`, error);
       }
       process.exit(1);
     });
   } catch (error) {
-    logger.error("❌ Failed to start the service:", error);
+    console.error("❌ Failed to start the service:", error);
     process.exit(1);
   }
 };
