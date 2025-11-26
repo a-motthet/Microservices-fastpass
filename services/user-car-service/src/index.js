@@ -20,6 +20,8 @@ import { CreateReservationCommandHandler } from "./application/handlers/command-
 import { SupabaseEventStore } from "../../../packages/common/src/infrastructure/persistence/SupabaseEventStore.js";
 import { RabbitMQAdapter } from "../../../packages/common/src/infrastructure/messaging/RabbitMQAdapter.js";
 import { EventConsumer } from "./infrastructure/projections/EventConsumer.js";
+import { AppError } from "../../../packages/common/src/errors/AppError.js";
+import { errorHandler } from "../../../packages/common/src/middlewares/errorHandler.js";
 
 // --- Logger Mock (เพื่อให้ใช้ syntax logger.info ได้เหมือน snippet ที่ให้มา) ---
 const logger = {
@@ -295,39 +297,96 @@ app.get("/reservations/:id", async (req, res) => {
 
 /**
  * POST /reservations
- * สร้างการจองใหม่ (รับค่าแบบ Composite)
+ * สร้างการจองใหม่ (พร้อมระบบ Auto-Assign Slot)
  */
-app.post("/reservations", async (req, res) => {
+app.post("/reservations", async (req, res, next) => {
   const {
-    userId, slotId,
+    userId,
+    // slotId, // 👈 เราจะไม่ใช้ slotId ที่ Frontend ส่งมาตรงๆ (เพราะมันเป็นแค่ Time ID)
     startTimeStamp, startDateLocal, startTimeLocal,
     endTimeStamp, endDateLocal, endTimeLocal,
     timeZoneOffset,
     parkingSiteId, floorId
   } = req.body;
 
-  logger.info(`[API] POST /reservations for user: ${userId}`);
+  logger.info(`[API] POST /reservations for user: ${userId} at ${floorId}`);
 
   // 1. Validate Basic Fields
-  if (!userId || !slotId || !startDateLocal || !startTimeLocal ||
+  if (!userId || !startDateLocal || !startTimeLocal ||
       !endDateLocal || !endTimeLocal || !timeZoneOffset ||
       !parkingSiteId || !floorId) {
-    return res.status(400).json({ error: "Missing required composite time fields or IDs" });
+    return next(new AppError("Missing required fields for auto-assignment", 400));
   }
 
-  // 2. Validate Logic (Start < End)
+  // 2. Validate Time Logic
   const startDate = parseCompositeToISO(startDateLocal, startTimeLocal, timeZoneOffset);
   const endDate = parseCompositeToISO(endDateLocal, endTimeLocal, timeZoneOffset);
   
   if (startDate >= endDate) {
-    return res.status(400).json({ error: "End time must be after start time" });
+    return next(new AppError("End time must be after start time", 400));
   }
 
   try {
-    // 3. ส่ง object ทั้งก้อนนี้ไปให้ CreateReservationCommand
-    // (ต้องแน่ใจว่า CreateReservationCommand.js ถูกแก้ให้รับ object แล้ว)
+    // ==================================================
+    // 🤖 AUTO-ASSIGN LOGIC START
+    // ==================================================
+    
+    // Step A: ดึงรายชื่อ "ช่องจอดจริง" (Physical Slots) ทั้งหมดในชั้นนี้จาก slot-service
+    let physicalSlots = [];
+    try {
+        const slotServiceUrl = process.env.SLOT_SERVICE_URL;
+        // ยิงไปที่ API ที่เราเตรียมไว้ (ต้องมั่นใจว่า slot-service รองรับการกรองด้วย floorId)
+        const response = await axios.get(`${slotServiceUrl}/slots?parkingSiteId=${parkingSiteId}&floorId=${floorId}&status=available`);
+        physicalSlots = response.data; // Array of objects: [{ id: '16011003001', name: 'A-01' }, ...]
+        
+        if (!physicalSlots || physicalSlots.length === 0) {
+            return next(new AppError(`No physical slots configuration found for floor ${floorId}`, 404));
+        }
+    } catch (err) {
+        logger.error("Failed to fetch physical slots:", err.message);
+        return next(new AppError("System cannot retrieve slot configuration.", 500));
+    }
+
+    // Step B: ดึงรายการที่ "ถูกจองแล้ว" ในช่วงเวลานี้
+    // (Overlap Logic: StartA < EndB && EndA > StartB)
+    // แปลงเวลาเป็น UTC ISO String เพื่อ Query DB
+    // (ใช้ฟังก์ชัน Helper เดียวกับที่ Projection ใช้ หรือเขียนสดที่นี่ก็ได้)
+    // เพื่อความชัวร์ ใช้ new Date(startDate).toISOString()
+    const startISO = startDate.toISOString();
+    const endISO = endDate.toISOString();
+
+    const { data: bookedReservations, error } = await supabase
+        .from("reservations")
+        .select("slot_id") // เราต้องการแค่รู้ว่า slot_id ไหนไม่ว่าง
+        .eq("floor_id", floorId) // กรองเฉพาะชั้นนี้
+        .in("status", ["pending", "checked_in"]) // สถานะที่ถือว่าไม่ว่าง
+        .lt("start_time", endISO) // เวลาทับซ้อน
+        .gt("end_time", startISO);
+
+    if (error) throw error;
+
+    // สร้าง Set ของ ID ที่ถูกจองแล้ว เพื่อความเร็วในการค้นหา
+    const bookedSlotIds = new Set(bookedReservations.map(r => r.slot_id));
+
+    // Step C: หาช่องที่ว่าง (Available = All - Booked)
+    // วนลูปหา physical slot ตัวแรก ที่ไม่อยู่ใน bookedSlotIds
+    const assignedSlot = physicalSlots.find(slot => !bookedSlotIds.has(slot.id));
+
+    if (!assignedSlot) {
+        // ถ้าหาไม่เจอเลย แสดงว่าเต็ม
+        return next(new AppError("All slots are fully booked for this time range.", 409)); // 409 Conflict
+    }
+
+    logger.info(`[Auto-Assign] Assigned physical slot: ${assignedSlot.id} (${assignedSlot.name})`);
+
+    // ==================================================
+    // 🤖 AUTO-ASSIGN LOGIC END
+    // ==================================================
+
+    // 3. สร้าง Command ด้วย Slot จริงที่หาได้ (assignedSlot.id)
     const command = new CreateReservationCommand({
-      userId, slotId,
+      userId, 
+      slotId: assignedSlot.id, // 👈 ใช้ ID จริง (11 หลัก) แทน Time ID
       startTimeStamp, startDateLocal, startTimeLocal,
       endTimeStamp, endDateLocal, endTimeLocal,
       timeZoneOffset,
@@ -335,13 +394,18 @@ app.post("/reservations", async (req, res) => {
     });
 
     const result = await createReservationHandler.handle(command);
-    res.status(201).json(result);
+    
+    // ส่งชื่อช่องจอดกลับไปบอก Frontend ด้วยก็ได้
+    res.status(201).json({
+        ...result,
+        assignedSlotName: assignedSlot.name
+    });
+
   } catch (error) {
     logger.error(`[Error] POST /reservations:`, error);
-    res.status(400).json({ error: error.message });
+    next(error);
   }
 });
-
 /**
  * POST /reservations/:id/status
  */
@@ -368,6 +432,9 @@ app.post("/check-ins", async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+
+// Global Error Handler
+app.use(errorHandler);
 
 // =================================================================
 //  Server Startup

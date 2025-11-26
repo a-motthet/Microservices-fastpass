@@ -2,76 +2,63 @@
 
 export class ReservationProjection {
   constructor(supabaseClient) {
-    if (!supabaseClient) {
-      throw new Error("ReservationProjection requires a Supabase client.");
-    }
     this.supabase = supabaseClient;
-    this.tableName = 'reservations'; // ชื่อตาราง Read Model
+    this.tableName = 'reservations';
   }
 
-  /**
-   * จัดการ Event เมื่อมีการสร้างการจองใหม่
-   * บันทึกข้อมูลลงตาราง reservations
-   * แปลง composite time components กลับเป็น UTC ISO String
-   */
   async handleReservationCreated(event) {
     const {
-      reservationId,
-      userId,
-      slotId,
-      status,
-      startDateLocal,
-      startTimeLocal,
-      timeZoneOffset,
-      endDateLocal,
-      endTimeLocal,
-      createdAt,
-      parkingSiteId,
-      floorId 
+      reservationId, userId, slotId, status, parkingSiteId, floorId,
+      startDateLocal, startTimeLocal, timeZoneOffset,
+      endDateLocal, endTimeLocal, createdAt
     } = event;
 
-    console.log(
-      `[ReservationProjection] Projecting ReservationCreatedEvent for reservation: ${reservationId}`
-    );
+    console.log(`[ReservationProjection] Processing ${reservationId}`);
+    
+    // Debug: เช็กว่าค่ามาครบไหม
+    if (!startDateLocal || !startTimeLocal || !timeZoneOffset) {
+        console.error("[ReservationProjection] MISSING TIME DATA in Event:", event);
+        return; // หยุดทำงานเพื่อไม่ให้ crash
+    }
 
-    // แปลงกลับเป็น UTC ISO String สำหรับ Read Model
-    const startTimeUTC = new Date(`${startDateLocal}T${startTimeLocal}${timeZoneOffset}`).toISOString();
-    const endTimeUTC = new Date(`${endDateLocal}T${endTimeLocal}${timeZoneOffset}`).toISOString();
-    const reservedAtUTC = new Date(createdAt * 1000).toISOString(); // Convert unix timestamp to ISO
+    try {
+      // แปลงกลับเป็น UTC ISO String สำหรับ Database
+      const startTimeUTC = new Date(`${startDateLocal}T${startTimeLocal}${timeZoneOffset}`).toISOString();
+      const endTimeUTC = new Date(`${endDateLocal}T${endTimeLocal}${timeZoneOffset}`).toISOString();
+      
+      // createdAt อาจจะเป็น timestamp (number) หรือ string
+      let reservedAtUTC;
+      if (typeof createdAt === 'number') {
+          reservedAtUTC = new Date(createdAt * 1000).toISOString();
+      } else {
+          reservedAtUTC = new Date().toISOString();
+      }
 
-    const { error } = await this.supabase
-      .from(this.tableName)
-      .insert({
-        id: reservationId,
-        user_id: userId,
-        parking_site_id: parkingSiteId,
-        floor_id: floorId,
-        slot_id: slotId,
-        status: status || 'pending',
-        start_time: startTimeUTC,    // 👈 UTC ISO String สำหรับ SQL queries
-        end_time: endTimeUTC,        // 👈 UTC ISO String สำหรับ SQL queries
-        reserved_at: reservedAtUTC,  // 👈 UTC ISO String
-        version: 1,
-        updated_at: new Date()
-      });
+      const { error } = await this.supabase
+        .from(this.tableName)
+        .insert({
+          id: reservationId,
+          user_id: userId,
+          parking_site_id: parkingSiteId,
+          floor_id: floorId,
+          slot_id: slotId,
+          status: status || 'pending',
+          start_time: startTimeUTC,
+          end_time: endTimeUTC,
+          reserved_at: reservedAtUTC,
+          version: 1,
+          updated_at: new Date()
+        });
 
-    if (error) {
-      console.error(
-        `[ReservationProjection] Error inserting new reservation:`,
-        error
-      );
-      // โยน Error ออกไปเพื่อให้ Consumer รู้ว่าทำไม่สำเร็จ (และอาจ Retry)
-      throw error;
-    } else {
-      console.log(
-        `[ReservationProjection] Successfully projected new reservation.`
-      );
+      if (error) throw error;
+      console.log(`[ReservationProjection] Successfully projected.`);
+
+    } catch (err) {
+      console.error(`[ReservationProjection] Error:`, err);
     }
   }
-
   /**
    * จัดการ Event เมื่อมีการอัปเดตสถานะ (เช่น check-in, cancel)
-   * อัปเดตสถานะในตาราง reservations
    */
   async handleParkingStatusUpdated(event) {
     const { reservationId, newStatus, updatedAt } = event;
@@ -87,18 +74,13 @@ export class ReservationProjection {
         updated_at: updatedAt || new Date(),
       })
       .eq("id", reservationId)
-      .select(); // เลือกข้อมูลกลับมาดูเพื่อ confirm
+      .select();
 
     if (error) {
-      console.error(
-        `[ReservationProjection] Error updating reservation status:`,
-        error
-      );
+      console.error(`[ReservationProjection] Error updating reservation status:`, error);
       throw error;
     } else {
-      console.log(
-        `[ReservationProjection] Successfully updated status for reservation: ${reservationId}`
-      );
+      console.log(`[ReservationProjection] Successfully updated status for reservation: ${reservationId}`);
     }
   }
 }

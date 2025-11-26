@@ -16,22 +16,22 @@ export class ReservationAggregate {
     this.userId = null;
     this.slotId = null;
     this.status = null;
-    
-    // Start Time Components
+
+    // Time Components State (Flat Structure)
     this.startTimeStamp = null;
     this.startDateLocal = null;
     this.startTimeLocal = null;
-    
-    // End Time Components
+
     this.endTimeStamp = null;
     this.endDateLocal = null;
     this.endTimeLocal = null;
-    
-    // Timezone
+
     this.timeZoneOffset = null;
-    
+
+    // Location State
     this.parkingSiteId = null;
     this.floorId = null;
+
     this.version = 0;
     this.uncommittedEvents = [];
   }
@@ -45,43 +45,51 @@ export class ReservationAggregate {
     if (this.version > 0) {
       throw new Error("Reservation already exists.");
     }
+
+    // Validate Required Fields
     if (
       !command.userId ||
       !command.slotId ||
+      !command.parkingSiteId ||
+      !command.floorId ||
       !command.startDateLocal ||
       !command.startTimeLocal ||
       !command.endDateLocal ||
       !command.endTimeLocal ||
-      !command.timeZoneOffset ||
-      !command.parkingSiteId ||
-      !command.floorId
+      !command.timeZoneOffset
     ) {
       throw new Error("Missing required reservation details in command.");
     }
-    
-    // Validate time logic
-    const startDate = new Date(`${command.startDateLocal}T${command.startTimeLocal}${command.timeZoneOffset}`);
-    const endDate = new Date(`${command.endDateLocal}T${command.endTimeLocal}${command.timeZoneOffset}`);
-    
-    if (startDate >= endDate) {
+
+    // Validate Logic (Start < End)
+    // Construct ISO strings temporarily for comparison
+    const startISO = `${command.startDateLocal}T${command.startTimeLocal}${command.timeZoneOffset}`;
+    const endISO = `${command.endDateLocal}T${command.endTimeLocal}${command.timeZoneOffset}`;
+
+    if (new Date(startISO) >= new Date(endISO)) {
       throw new Error("End time must be after start time.");
     }
     // --- End Business Rules ---
 
-    const createdAt = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
-
+    // Create Event with Flat Data Structure
     const event = new ReservationCreatedEvent(
       this.id,
       command.userId,
       command.slotId,
-      command.startTimeStamp || Math.floor(startDate.getTime() / 1000),
+      new Date(), // reservedAt (Creation Time)
+
+      // Time Components
+      command.startTimeStamp,
       command.startDateLocal,
       command.startTimeLocal,
-      command.endTimeStamp || Math.floor(endDate.getTime() / 1000),
+
+      command.endTimeStamp,
       command.endDateLocal,
       command.endTimeLocal,
+
       command.timeZoneOffset,
-      createdAt,
+
+      // Location
       command.parkingSiteId,
       command.floorId
     );
@@ -90,11 +98,10 @@ export class ReservationAggregate {
   }
 
   /**
-   * Updates the status of an existing reservation. Called by relevant Command Handlers.
+   * Updates the status of an existing reservation.
    * @param {object} command - The command containing the newStatus.
    */
   updateStatus(command) {
-    // --- Business Rules ---
     if (this.version === 0) {
       throw new Error("Reservation does not exist yet. Cannot update status.");
     }
@@ -107,15 +114,14 @@ export class ReservationAggregate {
       console.warn(
         `[Aggregate ${this.id}] Status is already ${this.status}. No change applied.`
       );
-      return; // No need to create an event if status is the same
+      return;
     }
-    // --- End Business Rules ---
 
     const event = new ParkingStatusUpdatedEvent(
       this.id,
       command.newStatus,
-      new Date(), // updatedAt timestamp
-      this.userId // Include userId in the event
+      new Date(),
+      this.userId
     );
 
     this._applyAndRecord(event);
@@ -123,25 +129,16 @@ export class ReservationAggregate {
 
   // --- Internal State Mutators ---
 
-  /** Helper to apply event and add to uncommitted list */
   _applyAndRecord(event) {
-    this._apply(event); // Apply state change
-    this.uncommittedEvents.push(event); // Record event
-    // DO NOT increment version here for new events yet.
-    // Version will be incremented by the Command Handler after successful save.
+    this._apply(event);
+    this.uncommittedEvents.push(event);
   }
 
-  /**
-   * Internal method to apply state changes based on an event.
-   * This is used both when creating new events and when rehydrating from history.
-   * It should NOT increment the version during rehydration.
-   * @param {object} event - Either an event instance or plain event data from the store.
-   */
   _apply(event) {
     let eventType;
     let data;
 
-    // Check if it's an event instance (new event)
+    // Check if it's an event instance (New Event)
     if (
       event instanceof ReservationCreatedEvent ||
       event instanceof ParkingStatusUpdatedEvent
@@ -149,47 +146,45 @@ export class ReservationAggregate {
       eventType = event.constructor.name;
       data = event;
     }
-    // Check if it's plain data (rehydration)
+    // Check if it's plain data (Rehydration from Event Store)
     else if (typeof event === "object" && event !== null) {
-      // Infer type from properties
       if (event.slotId && event.startDateLocal)
         eventType = "ReservationCreatedEvent";
       else if (event.newStatus) eventType = "ParkingStatusUpdatedEvent";
       else eventType = "UnknownEvent";
-      data = event; // Data is the event object itself in this case
+      data = event;
     } else {
       console.warn(
         `[Aggregate ${this.id}] Invalid event passed to _apply:`,
         event
       );
-      return; // Cannot apply
+      return;
     }
-
-    // console.log(`[Aggregate ${this.id}] Applying event: ${eventType}`);
 
     switch (eventType) {
       case "ReservationCreatedEvent":
         this.userId = data.userId;
         this.slotId = data.slotId;
         this.status = data.status || "pending";
-        
-        // Store as composite components
+        this.parkingSiteId = data.parkingSiteId;
+        this.floorId = data.floorId;
+
+        // Update Time Components State
         this.startTimeStamp = data.startTimeStamp;
         this.startDateLocal = data.startDateLocal;
         this.startTimeLocal = data.startTimeLocal;
-        
+
         this.endTimeStamp = data.endTimeStamp;
         this.endDateLocal = data.endDateLocal;
         this.endTimeLocal = data.endTimeLocal;
-        
+
         this.timeZoneOffset = data.timeZoneOffset;
-        
-        this.parkingSiteId = data.parkingSiteId; 
-        this.floorId = data.floorId; 
         break;
+
       case "ParkingStatusUpdatedEvent":
         this.status = data.newStatus;
         break;
+
       default:
         console.warn(
           `[Aggregate ${this.id}] Unhandled event type in _apply: ${eventType}`
@@ -199,75 +194,70 @@ export class ReservationAggregate {
 
   // --- Snapshotting Methods ---
 
-  /**
-   * Gets the current state object for snapshotting.
-   * @returns {object} A plain object representing the aggregate's current state.
-   */
   getState() {
     return {
       userId: this.userId,
       slotId: this.slotId,
       status: this.status,
-      
-      // Time as composite components
+      parkingSiteId: this.parkingSiteId,
+      floorId: this.floorId,
+
+      // Save Time Components
       startTimeStamp: this.startTimeStamp,
       startDateLocal: this.startDateLocal,
       startTimeLocal: this.startTimeLocal,
-      
+
       endTimeStamp: this.endTimeStamp,
       endDateLocal: this.endDateLocal,
       endTimeLocal: this.endTimeLocal,
-      
+
       timeZoneOffset: this.timeZoneOffset,
-      
-      parkingSiteId: this.parkingSiteId,
-      floorId: this.floorId,
-      // Version is stored on the snapshot record itself
     };
   }
 
-  /**
-   * Initializes the aggregate state from a loaded snapshot record.
-   * @param {object} snapshotRecord - The record from the 'snapshots' table.
-   */
   rehydrateFromSnapshot(snapshotRecord) {
     const snapshotData = snapshotRecord.snapshot_data;
     if (!snapshotData) return;
 
-    this.timeZoneOffset = snapshotData.timeZoneOffset;
-    
+    // Restore state
+    this.userId = snapshotData.userId;
+    this.slotId = snapshotData.slotId;
+    this.status = snapshotData.status;
     this.parkingSiteId = snapshotData.parkingSiteId;
     this.floorId = snapshotData.floorId;
 
-    // Set the version based on the snapshot record's version
+    // Restore Time Components
+    this.startTimeStamp = snapshotData.startTimeStamp;
+    this.startDateLocal = snapshotData.startDateLocal;
+    this.startTimeLocal = snapshotData.startTimeLocal;
+
+    this.endTimeStamp = snapshotData.endTimeStamp;
+    this.endDateLocal = snapshotData.endDateLocal;
+    this.endTimeLocal = snapshotData.endTimeLocal;
+
+    this.timeZoneOffset = snapshotData.timeZoneOffset;
+
     this.version = snapshotRecord.version;
     console.log(
       `[Aggregate ${this.id}] Rehydrated from snapshot version ${this.version}`
     );
   }
 
-  /**
-   * Applies events loaded from the event store that occurred after the snapshot.
-   * @param {Array<object>} events - An array of event data objects.
-   */
   rehydrateFromEvents(events) {
     if (!events || events.length === 0) return;
-
     console.log(
       `[Aggregate ${this.id}] Rehydrating with ${
         events.length
       } events starting from version ${this.version + 1}`
     );
     events.forEach((eventData) => {
-      this._apply(eventData); // Apply state changes from the event
-      this.version++; // Increment version for EACH replayed event
+      this._apply(eventData);
+      this.version++;
     });
     console.log(
       `[Aggregate ${this.id}] Finished rehydrating. Final version: ${this.version}`
     );
   }
-
-  // --- Accessors ---
 
   getUncommittedEvents() {
     return this.uncommittedEvents;

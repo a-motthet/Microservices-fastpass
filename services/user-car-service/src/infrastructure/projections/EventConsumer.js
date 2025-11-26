@@ -3,6 +3,7 @@
 import { ReservationProjection } from "./ReservationProjection.js";
 import { UserProjection } from "./UserProjection.js";
 import { ReservationHistoryProjection } from "./ReservationHistoryProjection.js";
+import { HistoryProjection } from './HistoryProjection.js';
 
 export class EventConsumer {
   /**
@@ -18,7 +19,7 @@ export class EventConsumer {
     this.reservationHistoryProjection = new ReservationHistoryProjection(
       this.supabase
     );
-
+    this.historyProjection = new HistoryProjection(this.supabase);
     // ผูก `this` ให้กับเมธอด handleEvent เพื่อให้เรียกใช้ใน context ที่ถูกต้อง
     this.handleEvent = this.handleEvent.bind(this);
   }
@@ -102,6 +103,7 @@ export class EventConsumer {
         await this.reservationHistoryProjection.handleReservationEvent(
           eventMessage
         );
+        await this.historyProjection.handleParkingStatusUpdated(event_data);
         break;
 
       case "ReservationCreatedEvent":
@@ -109,6 +111,7 @@ export class EventConsumer {
         await this.reservationHistoryProjection.handleReservationEvent(
           eventMessage
         );
+        await this.historyProjection.handleReservationCreated(event_data);
         break;
 
       default:
