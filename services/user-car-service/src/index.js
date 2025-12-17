@@ -279,24 +279,47 @@ app.get("/reservations/:id", async (req, res, next) => {
 app.post("/reservations", async (req, res, next) => {
   const {
     userId,
-    // slotId, // unused, we use auto-assign
+    slotId, // 👈 Now required
     startTimeStamp, startDateLocal, startTimeLocal,
     endTimeStamp, endDateLocal, endTimeLocal,
     timeZoneOffset,
-    parkingSiteId, floorId
+    vehicle_type
   } = req.body;
 
-  logger.info(`[API] POST /reservations for user: ${userId} at ${floorId}`);
+  logger.info(`[API] POST /reservations for user: ${userId} at slot: ${slotId}`);
 
-  if (!userId || !startDateLocal || !startTimeLocal || !endDateLocal || !endTimeLocal || !timeZoneOffset || !parkingSiteId || !floorId) {
-    return next(new AppError("Missing required fields for auto-assignment", 400));
+  if (!userId || !slotId) {
+    return next(new AppError("Missing required fields (userId, slotId)", 400));
+  }
+  if (!startDateLocal || !startTimeLocal || !endDateLocal || !endTimeLocal || !timeZoneOffset) {
+      return next(new AppError("Missing required date/time fields", 400));
   }
 
   // 1. Get Vehicle Type from body
-  let vehicleType = req.body.vehicle_type || 'car';
+  let vehicleType = vehicle_type || 'car';
   let carId = null; 
   
-  // Note: carId is null because we are not looking up by licensePlate anymore as per requirement.
+  // 2. Lookup Slot Details (Parking Site & Floor)
+  let parkingSiteId, floorId, slotName;
+  try {
+      const { data: slotData, error: slotError } = await supabase
+          .from('slots')
+          .select('parking_site_id, floor_id, name')
+          .eq('id', slotId)
+          .single();
+
+      if (slotError || !slotData) {
+          logger.error(`Slot lookup failed for ${slotId}:`, slotError);
+          return next(new AppError(`Slot ${slotId} not found`, 404));
+      }
+      
+      parkingSiteId = slotData.parking_site_id;
+      floorId = slotData.floor_id;
+      slotName = slotData.name;
+      
+  } catch (err) {
+      return next(new AppError("System cannot retrieve slot details.", 500));
+  }
 
   const startDate = parseCompositeToISO(startDateLocal, startTimeLocal, timeZoneOffset);
   const endDate = parseCompositeToISO(endDateLocal, endTimeLocal, timeZoneOffset);
@@ -304,58 +327,42 @@ app.post("/reservations", async (req, res, next) => {
   if (startDate >= endDate) return next(new AppError("End time must be after start time", 400));
 
   try {
-    // --- Auto Assign Logic ---
-    let physicalSlots = [];
-    try {
-        const slotServiceUrl = process.env.SLOT_SERVICE_URL;
-        const response = await axios.get(`${slotServiceUrl}/slots?parkingSiteId=${parkingSiteId}&floorId=${floorId}&status=available`);
-        physicalSlots = response.data;
-        
-        if (!physicalSlots || physicalSlots.length === 0) {
-            return next(new AppError(`No physical slots available configuration found for floor ${floorId}`, 404));
-        }
-    } catch (err) {
-        logger.error("Failed to fetch physical slots:", err.message);
-        return next(new AppError("System cannot retrieve slot configuration.", 500));
-    }
-
+    // 3. Check for overlapping reservations for this specific slot
     const startISO = startDate.toISOString();
     const endISO = endDate.toISOString();
 
-    const { data: bookedReservations, error } = await supabase
+    const { data: conflictReservations, error: conflictError } = await supabase
         .from("reservations")
-        .select("slot_id")
-        .eq("floor_id", floorId)
+        .select("id")
+        .eq("slot_id", slotId) // Check distinct slot
         .in("status", ["pending", "checked_in"])
         .lt("start_time", endISO)
         .gt("end_time", startISO);
 
-    if (error) throw error;
+    if (conflictError) throw conflictError;
 
-    const bookedSlotIds = new Set(bookedReservations.map(r => r.slot_id));
-    const assignedSlot = physicalSlots.find(slot => !bookedSlotIds.has(slot.id));
-
-    if (!assignedSlot) {
-        return next(new AppError("All slots are fully booked for this time range.", 409));
+    if (conflictReservations && conflictReservations.length > 0) {
+        return next(new AppError("This slot is already booked for the selected time range.", 409));
     }
 
-    logger.info(`[Auto-Assign] Assigned physical slot: ${assignedSlot.id} (${assignedSlot.name})`);
-
+    // 4. Create Reservation
     const command = new CreateReservationCommand({
-      userId, slotId: assignedSlot.id,
+      userId, 
+      slotId: slotId,
       startTimeStamp, startDateLocal, startTimeLocal,
       endTimeStamp, endDateLocal, endTimeLocal,
       timeZoneOffset,
-      parkingSiteId, floorId,
-      vehicleType, // 👈 New Input
-      carId        // 👈 New Input
+      parkingSiteId, 
+      floorId,
+      vehicleType, 
+      carId
     });
 
     const result = await createReservationHandler.handle(command);
     
     res.status(201).json({
         ...result,
-        assignedSlotName: assignedSlot.name
+        assignedSlotName: slotName
     });
 
   } catch (error) {

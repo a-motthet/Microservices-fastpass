@@ -6,9 +6,10 @@ export class ParkingStatusUpdatedEvent {
    * @param {string} newStatus
    * @param {Date} updatedAt
    */
-  constructor(reservationId, newStatus, updatedAt, userId) {
+  constructor(reservationId, newStatus, statusCode, updatedAt, userId) {
     this.reservationId = reservationId;
     this.newStatus = newStatus;
+    this.statusCode = statusCode;
     this.updatedAt = updatedAt;
     this.userId = userId;
   }

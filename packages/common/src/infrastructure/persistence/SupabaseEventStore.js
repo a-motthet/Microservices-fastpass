@@ -73,6 +73,8 @@ export class SupabaseEventStore {
          
          // Remove carId as requested by user
          delete eventData.carId;
+         delete eventData.floorId; // 👈 Removed
+         delete eventData.parkingSiteId; // 👈 Removed
       }
 
       return {
