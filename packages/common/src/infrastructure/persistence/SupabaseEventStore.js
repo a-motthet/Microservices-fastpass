@@ -71,10 +71,10 @@ export class SupabaseEventStore {
             eventData.vehicle_type = eventData.vehicleType;
          }
          
-         // Remove carId as requested by user
          delete eventData.carId;
-         delete eventData.floorId; // 👈 Removed
-         delete eventData.parkingSiteId; // 👈 Removed
+         delete eventData.floorId; 
+         delete eventData.parkingSiteId; 
+         delete eventData.reservedAt; // 👈 Removed
       }
 
       return {

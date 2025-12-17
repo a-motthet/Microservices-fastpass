@@ -8,8 +8,11 @@ export class ReservationCreatedEvent {
     timeZoneOffset,
     parkingSiteId, floorId,
     statusCode,
-    vehicleType, // 👈 New Argument
-    carId        // 👈 New Argument
+    vehicleType,
+    carId,
+    reservedAtDateLocal, // 👈 New
+    reservedAtTimeLocal, // 👈 New
+    reservedAtTimeStamp  // 👈 New
   ) {
     // --- Group 1: IDs (เอา ID ทั้งหมดขึ้นก่อน) ---
     this.reservationId = reservationId;
@@ -34,8 +37,14 @@ export class ReservationCreatedEvent {
 
     // --- Group 5: Meta Data (อื่นๆ) ---
     this.timeZoneOffset = timeZoneOffset;
-    this.reservedAt = reservedAt;
-    this.vehicleType = vehicleType || 'car'; // 👈 New field
-    this.carId = carId || null;              // 👈 New field
+    this.reservedAt = reservedAt; // Will be deleted by EventStore, but kept here for now or removed if unused?
+    
+    // New Fields
+    this.reservedAtDateLocal = reservedAtDateLocal;
+    this.reservedAtTimeLocal = reservedAtTimeLocal;
+    this.reservedAtTimeStamp = reservedAtTimeStamp;
+
+    this.vehicleType = vehicleType || 'car'; 
+    this.carId = carId || null;              
   }
 }

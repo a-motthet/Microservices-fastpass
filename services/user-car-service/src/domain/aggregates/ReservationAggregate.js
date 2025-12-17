@@ -53,12 +53,16 @@ export class ReservationAggregate {
       throw new Error("End time must be after start time.");
     }
 
+    // Calculate ReservedAt (Now) components
+    const now = new Date();
+    const { dateLocal, timeLocal, timeStamp } = getLocalPartsFromDate(now, command.timeZoneOffset);
+
     // Create Event
     const event = new ReservationCreatedEvent(
       this.id,
       command.userId,
       command.slotId,
-      new Date(),
+      now, // reservedAt (Original Date object)
       
       command.startTimeStamp,
       command.startDateLocal,
@@ -72,8 +76,12 @@ export class ReservationAggregate {
       command.floorId,
       
       "1", // statusCode
-      command.vehicleType, // 👈 Pass vehicleType
-      command.carId        // 👈 Pass carId
+      command.vehicleType,
+      command.carId,
+      
+      dateLocal, // reservedAtDateLocal
+      timeLocal, // reservedAtTimeLocal
+      timeStamp  // reservedAtTimeStamp
     );
 
     this._applyAndRecord(event);
@@ -212,4 +220,26 @@ function getStatusCode(statusText) {
     'cancelled': '0'
   };
   return map[statusText] || '99';
+}
+
+function getLocalPartsFromDate(dateObj, offsetStr) {
+  // offsetStr format: "+07:00" or "-05:30"
+  if (!offsetStr) return { dateLocal: null, timeLocal: null, timeStamp: null };
+
+  const sign = offsetStr.startsWith('-') ? -1 : 1;
+  const parts = offsetStr.substring(1).split(':');
+  const offsetHours = parseInt(parts[0], 10);
+  const offsetMinutes = parseInt(parts[1], 10);
+  const offsetMs = sign * ((offsetHours * 60) + offsetMinutes) * 60 * 1000;
+
+  const localTimeMs = dateObj.getTime() + offsetMs;
+  const localDateObj = new Date(localTimeMs);
+  
+  const iso = localDateObj.toISOString(); // e.g. 2024-03-20T10:00:00.000Z
+  const [dateLocal, timePart] = iso.split('T');
+  const timeLocal = timePart.substring(0, 8); // "10:00:00"
+
+  const timeStamp = Math.floor(dateObj.getTime() / 1000).toString();
+
+  return { dateLocal, timeLocal, timeStamp };
 }
