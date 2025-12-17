@@ -71,7 +71,7 @@ app.get("/recent-activity/:userId", async (req, res) => {
 
   try {
     const { data, error } = await supabase
-      .from("recently_activity_read_model")
+      .from("recent_activities") // 👈 Fix table name
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false }) // เรียงจากกิจกรรมล่าสุดไปเก่าสุด

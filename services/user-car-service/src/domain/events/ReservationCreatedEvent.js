@@ -1,30 +1,41 @@
+// src/domain/events/ReservationCreatedEvent.js
+
 export class ReservationCreatedEvent {
   constructor(
     reservationId, userId, slotId, reservedAt,
-    // Time Components
     startTimeStamp, startDateLocal, startTimeLocal,
     endTimeStamp, endDateLocal, endTimeLocal,
     timeZoneOffset,
-    // Location
-    parkingSiteId, floorId
+    parkingSiteId, floorId,
+    statusCode,
+    vehicleType, // 👈 New Argument
+    carId        // 👈 New Argument
   ) {
+    // --- Group 1: IDs (เอา ID ทั้งหมดขึ้นก่อน) ---
     this.reservationId = reservationId;
     this.userId = userId;
+    this.parkingSiteId = parkingSiteId; // 👈 ย้ายขึ้นมาตรงนี้
+    this.floorId = floorId;             // 👈 ย้ายขึ้นมาตรงนี้
     this.slotId = slotId;
-    this.reservedAt = reservedAt;
+
+    // --- Group 2: Status (สถานะ) ---
     this.status = "pending";
-    
-    // Assign Flat
+    this.statusCode = statusCode || "1";
+
+    // --- Group 3: Start Time (เวลาเริ่ม) ---
     this.startTimeStamp = startTimeStamp;
     this.startDateLocal = startDateLocal;
     this.startTimeLocal = startTimeLocal;
-    
+
+    // --- Group 4: End Time (เวลาจบ) ---
     this.endTimeStamp = endTimeStamp;
     this.endDateLocal = endDateLocal;
     this.endTimeLocal = endTimeLocal;
-    
+
+    // --- Group 5: Meta Data (อื่นๆ) ---
     this.timeZoneOffset = timeZoneOffset;
-    this.parkingSiteId = parkingSiteId;
-    this.floorId = floorId;
+    this.reservedAt = reservedAt;
+    this.vehicleType = vehicleType || 'car'; // 👈 New field
+    this.carId = carId || null;              // 👈 New field
   }
 }

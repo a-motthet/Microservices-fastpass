@@ -7,20 +7,34 @@ export class ActivityProjection {
   /**
    * เมื่อมีการสร้างการจองใหม่ ให้ INSERT ข้อมูลใหม่ลงไป
    */
+  /**
+   * เมื่อมีการสร้างการจองใหม่ ให้ INSERT ข้อมูลใหม่ลงไป
+   */
   async handleReservationCreated(event) {
-    const { reservationId, userId, slotId, status, startTime, endTime } = event;
+    const { 
+      reservationId, userId, slotId, status, 
+      startDateLocal, startTimeLocal, timeZoneOffset,
+      endDateLocal, endTimeLocal,
+      vehicleType
+    } = event;
+
     console.log(
       `[Recently] Projecting ReservationCreatedEvent: ${reservationId}`
     );
 
-    await this.supabase.from("recently_activity_read_model").insert({
+    // Construct timestamps
+    const startISO = `${startDateLocal}T${startTimeLocal}${timeZoneOffset}`;
+    const endISO = `${endDateLocal}T${endTimeLocal}${timeZoneOffset}`;
+
+    await this.supabase.from("recent_activities").insert({ // 👈 Fix table name
       reservation_id: reservationId,
       user_id: userId,
       slot_id: slotId,
-      status: status,
-      start_time: startTime,
-      end_time: endTime,
+      status: status || 'pending',
+      start_time: new Date(startISO).toISOString(),
+      end_time: new Date(endISO).toISOString(),
       updated_at: new Date(),
+      vehicle_type: vehicleType || 'car' // 👈 Add vehicle_type
     });
   }
 
@@ -34,11 +48,11 @@ export class ActivityProjection {
     );
 
     await this.supabase
-      .from("recently_activity_read_model")
+      .from("recent_activities") // 👈 Fix table name
       .update({
         status: newStatus,
         updated_at: new Date(),
       })
-      .eq("reservation_id", reservationId); // 👈 หาแถวที่จะอัปเดตจาก reservation_id
+      .eq("reservation_id", reservationId);
   }
 }

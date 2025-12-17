@@ -16,6 +16,7 @@ export class ReservationProjection {
     console.log(`[ReservationProjection] Processing ${reservationId}`);
     
     // Debug: เช็กว่าค่ามาครบไหม
+    // Debug: เช็กว่าค่ามาครบไหม
     if (!startDateLocal || !startTimeLocal || !timeZoneOffset) {
         console.error("[ReservationProjection] MISSING TIME DATA in Event:", event);
         return; // หยุดทำงานเพื่อไม่ให้ crash
@@ -43,11 +44,14 @@ export class ReservationProjection {
           floor_id: floorId,
           slot_id: slotId,
           status: status || 'pending',
+          status_code: event.statusCode || '1',
           start_time: startTimeUTC,
           end_time: endTimeUTC,
           reserved_at: reservedAtUTC,
           version: 1,
-          updated_at: new Date()
+          updated_at: new Date(),
+          vehicle_type: event.vehicleType || 'car', // 👈 New Column
+          car_id: event.carId || null               // 👈 New Column
         });
 
       if (error) throw error;
@@ -71,6 +75,7 @@ export class ReservationProjection {
       .from(this.tableName)
       .update({
         status: newStatus,
+        status_code: event.statusCode,
         updated_at: updatedAt || new Date(),
       })
       .eq("id", reservationId)

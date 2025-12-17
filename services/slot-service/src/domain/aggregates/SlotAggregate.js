@@ -12,8 +12,11 @@ export class SlotAggregate {
     this.details = null;
     this.parkingSiteId = null;
     this.floorId = null;
+    this.slotNumber = null; // 👈 New State
+    this.vehicleType = null; // 👈 New State
+    this.zoneId = null;      // 👈 New State
     this.status = null;
-    this.version = 0; // Version เริ่มต้น
+    this.version = 0;
     this.uncommittedEvents = [];
   }
 
@@ -21,57 +24,47 @@ export class SlotAggregate {
    * เมธอดสำหรับรับคำสั่งสร้าง Slot
    */
   createSlot(command) {
-    // กฎ: ห้ามสร้างซ้ำ (ถ้า version > 0 แสดงว่าถูกสร้างไปแล้ว)
     if (this.version > 0) {
       throw new Error("Slot already exists.");
     }
 
-    // สร้าง Event
     const event = new SlotCreatedEvent(
       this.id,
       command.name,
       command.floor,
       command.details,
       command.parkingSiteId,
-      command.floorId
+      command.floorId,
+      command.slotNumber, // 👈 Pass
+      command.vehicleType, // 👈 Pass
+      command.zoneId      // 👈 Pass
     );
 
-    // อัปเดตสถานะภายในและเก็บ Event ไว้
     this._applyAndRecord(event);
   }
 
-  // (ในอนาคตจะมีเมธอด updateStatus(command) ที่นี่)
-
-  // --- Internal Methods ---
+  // ... (updateStatus would go here)
 
   _applyAndRecord(event) {
     this._apply(event);
     this.uncommittedEvents.push(event);
   }
 
-  /**
-   * เมธอดสำหรับเปลี่ยนสถานะภายใน (ห้ามเพิ่ม version ที่นี่)
-   * ใช้ทั้งตอนสร้าง Event ใหม่ และตอน Rehydrate
-   */
   _apply(event) {
     let eventType;
     let data;
 
-    // ตรวจสอบว่าเป็น Event instance (ตอนสร้างใหม่)
     if (event instanceof SlotCreatedEvent) {
       eventType = event.constructor.name;
       data = event;
-    }
-    // ตรวจสอบว่าเป็น Plain Object (ตอน Rehydrate)
-    else if (typeof event === "object" && event !== null) {
+    } else if (typeof event === "object" && event !== null) {
       if (event.slotId && event.name) eventType = "SlotCreatedEvent";
       else eventType = "UnknownEvent";
       data = event;
     } else {
-      return; // ไม่รู้จัก Event นี้
+      return;
     }
 
-    // อัปเดตสถานะตามประเภท Event
     switch (eventType) {
       case "SlotCreatedEvent":
         this.name = data.name;
@@ -79,13 +72,13 @@ export class SlotAggregate {
         this.details = data.details;
         this.parkingSiteId = data.parkingSiteId;
         this.floorId = data.floorId;
+        this.slotNumber = data.slotNumber; // 👈 Update State
+        this.vehicleType = data.vehicleType || 'car'; // 👈 Update State
+        this.zoneId = data.zoneId;         // 👈 Update State
         this.status = data.status || "available";
         break;
-      // (ในอนาคตจะมี case 'SlotStatusUpdatedEvent': ...)
     }
   }
-
-  // --- Snapshotting Methods (เหมือนกับ Aggregate อื่นๆ) ---
 
   getState() {
     return {
@@ -94,6 +87,9 @@ export class SlotAggregate {
       details: this.details,
       parkingSiteId: this.parkingSiteId,
       floorId: this.floorId,
+      slotNumber: this.slotNumber, // 👈 Snapshot
+      vehicleType: this.vehicleType, // 👈 Snapshot
+      zoneId: this.zoneId,         // 👈 Snapshot
       status: this.status,
     };
   }
@@ -106,6 +102,9 @@ export class SlotAggregate {
     this.details = data.details;
     this.parkingSiteId = data.parkingSiteId;
     this.floorId = data.floorId;
+    this.slotNumber = data.slotNumber; // 👈 Restore
+    this.vehicleType = data.vehicleType; // 👈 Restore
+    this.zoneId = data.zoneId;         // 👈 Restore
     this.status = data.status;
     this.version = snapshotRecord.version;
     console.log(

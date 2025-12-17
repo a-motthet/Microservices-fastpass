@@ -5,30 +5,30 @@ import { ReservationCreatedEvent } from "../events/ReservationCreatedEvent.js";
 
 /**
  * Represents a parking reservation aggregate.
- * Manages the state and business logic related to a single reservation.
  */
 export class ReservationAggregate {
   constructor(id) {
-    if (!id) {
-      throw new Error("Aggregate ID is required.");
-    }
+    if (!id) throw new Error("Aggregate ID is required.");
     this.id = id;
     this.userId = null;
     this.slotId = null;
     this.status = null;
+    this.statusCode = null;
 
-    // Time Components State (Flat Structure)
+    // Vehicle Info
+    this.vehicleType = null; // 👈 New State
+    this.carId = null;       // 👈 New State
+
+    // Time Components
     this.startTimeStamp = null;
     this.startDateLocal = null;
     this.startTimeLocal = null;
-
     this.endTimeStamp = null;
     this.endDateLocal = null;
     this.endTimeLocal = null;
-
     this.timeZoneOffset = null;
 
-    // Location State
+    // Location
     this.parkingSiteId = null;
     this.floorId = null;
 
@@ -36,98 +36,64 @@ export class ReservationAggregate {
     this.uncommittedEvents = [];
   }
 
-  /**
-   * Creates a new reservation. Called by the CreateReservationCommandHandler.
-   * @param {object} command - The CreateReservationCommand containing details.
-   */
   createReservation(command) {
-    // --- Business Rules ---
-    if (this.version > 0) {
-      throw new Error("Reservation already exists.");
-    }
+    if (this.version > 0) throw new Error("Reservation already exists.");
 
     // Validate Required Fields
-    if (
-      !command.userId ||
-      !command.slotId ||
-      !command.parkingSiteId ||
-      !command.floorId ||
-      !command.startDateLocal ||
-      !command.startTimeLocal ||
-      !command.endDateLocal ||
-      !command.endTimeLocal ||
-      !command.timeZoneOffset
-    ) {
+    if (!command.userId || !command.slotId || !command.parkingSiteId || !command.floorId ||
+        !command.startDateLocal || !command.startTimeLocal || !command.endDateLocal ||
+        !command.endTimeLocal || !command.timeZoneOffset) {
       throw new Error("Missing required reservation details in command.");
     }
 
-    // Validate Logic (Start < End)
-    // Construct ISO strings temporarily for comparison
+    // Validate Time Logic
     const startISO = `${command.startDateLocal}T${command.startTimeLocal}${command.timeZoneOffset}`;
     const endISO = `${command.endDateLocal}T${command.endTimeLocal}${command.timeZoneOffset}`;
-
     if (new Date(startISO) >= new Date(endISO)) {
       throw new Error("End time must be after start time.");
     }
-    // --- End Business Rules ---
 
-    // Create Event with Flat Data Structure
+    // Create Event
     const event = new ReservationCreatedEvent(
       this.id,
       command.userId,
       command.slotId,
-      new Date(), // reservedAt (Creation Time)
-
-      // Time Components
+      new Date(),
+      
       command.startTimeStamp,
       command.startDateLocal,
       command.startTimeLocal,
-
       command.endTimeStamp,
       command.endDateLocal,
       command.endTimeLocal,
-
       command.timeZoneOffset,
-
-      // Location
+      
       command.parkingSiteId,
-      command.floorId
+      command.floorId,
+      
+      "1", // statusCode
+      command.vehicleType, // 👈 Pass vehicleType
+      command.carId        // 👈 Pass carId
     );
 
     this._applyAndRecord(event);
   }
 
-  /**
-   * Updates the status of an existing reservation.
-   * @param {object} command - The command containing the newStatus.
-   */
   updateStatus(command) {
-    if (this.version === 0) {
-      throw new Error("Reservation does not exist yet. Cannot update status.");
-    }
-    if (this.status === "checked_out" || this.status === "cancelled") {
-      throw new Error(
-        `Cannot update status from the current status: ${this.status}.`
-      );
-    }
-    if (this.status === command.newStatus) {
-      console.warn(
-        `[Aggregate ${this.id}] Status is already ${this.status}. No change applied.`
-      );
-      return;
-    }
+    if (this.version === 0) throw new Error("Reservation does not exist yet.");
+    
+    const newStatusCode = getStatusCode(command.newStatus);
 
     const event = new ParkingStatusUpdatedEvent(
       this.id,
       command.newStatus,
+      newStatusCode,
       new Date(),
       this.userId
     );
 
     this._applyAndRecord(event);
   }
-
-  // --- Internal State Mutators ---
 
   _applyAndRecord(event) {
     this._apply(event);
@@ -138,26 +104,15 @@ export class ReservationAggregate {
     let eventType;
     let data;
 
-    // Check if it's an event instance (New Event)
-    if (
-      event instanceof ReservationCreatedEvent ||
-      event instanceof ParkingStatusUpdatedEvent
-    ) {
+    if (event instanceof ReservationCreatedEvent || event instanceof ParkingStatusUpdatedEvent) {
       eventType = event.constructor.name;
       data = event;
-    }
-    // Check if it's plain data (Rehydration from Event Store)
-    else if (typeof event === "object" && event !== null) {
-      if (event.slotId && event.startDateLocal)
-        eventType = "ReservationCreatedEvent";
+    } else if (typeof event === "object" && event !== null) {
+      if (event.slotId && event.startDateLocal) eventType = "ReservationCreatedEvent";
       else if (event.newStatus) eventType = "ParkingStatusUpdatedEvent";
       else eventType = "UnknownEvent";
       data = event;
     } else {
-      console.warn(
-        `[Aggregate ${this.id}] Invalid event passed to _apply:`,
-        event
-      );
       return;
     }
 
@@ -166,104 +121,95 @@ export class ReservationAggregate {
         this.userId = data.userId;
         this.slotId = data.slotId;
         this.status = data.status || "pending";
+        this.statusCode = data.statusCode || "1";
+        
         this.parkingSiteId = data.parkingSiteId;
         this.floorId = data.floorId;
-
-        // Update Time Components State
+        
+        this.vehicleType = data.vehicleType || 'car'; // 👈 Update State
+        this.carId = data.carId || null;              // 👈 Update State
+        
         this.startTimeStamp = data.startTimeStamp;
         this.startDateLocal = data.startDateLocal;
         this.startTimeLocal = data.startTimeLocal;
-
         this.endTimeStamp = data.endTimeStamp;
         this.endDateLocal = data.endDateLocal;
         this.endTimeLocal = data.endTimeLocal;
-
         this.timeZoneOffset = data.timeZoneOffset;
         break;
 
       case "ParkingStatusUpdatedEvent":
         this.status = data.newStatus;
+        this.statusCode = data.statusCode;
         break;
-
-      default:
-        console.warn(
-          `[Aggregate ${this.id}] Unhandled event type in _apply: ${eventType}`
-        );
     }
   }
-
-  // --- Snapshotting Methods ---
 
   getState() {
     return {
       userId: this.userId,
       slotId: this.slotId,
       status: this.status,
+      statusCode: this.statusCode,
+      
       parkingSiteId: this.parkingSiteId,
       floorId: this.floorId,
-
-      // Save Time Components
+      
+      vehicleType: this.vehicleType, // 👈 Snapshot
+      carId: this.carId,             // 👈 Snapshot
+      
       startTimeStamp: this.startTimeStamp,
       startDateLocal: this.startDateLocal,
       startTimeLocal: this.startTimeLocal,
-
       endTimeStamp: this.endTimeStamp,
       endDateLocal: this.endDateLocal,
       endTimeLocal: this.endTimeLocal,
-
       timeZoneOffset: this.timeZoneOffset,
     };
   }
 
   rehydrateFromSnapshot(snapshotRecord) {
-    const snapshotData = snapshotRecord.snapshot_data;
-    if (!snapshotData) return;
+    const d = snapshotRecord.snapshot_data;
+    if (!d) return;
+    
+    this.userId = d.userId;
+    this.slotId = d.slotId;
+    this.status = d.status;
+    this.statusCode = d.statusCode;
+    
+    this.parkingSiteId = d.parkingSiteId;
+    this.floorId = d.floorId;
 
-    // Restore state
-    this.userId = snapshotData.userId;
-    this.slotId = snapshotData.slotId;
-    this.status = snapshotData.status;
-    this.parkingSiteId = snapshotData.parkingSiteId;
-    this.floorId = snapshotData.floorId;
-
-    // Restore Time Components
-    this.startTimeStamp = snapshotData.startTimeStamp;
-    this.startDateLocal = snapshotData.startDateLocal;
-    this.startTimeLocal = snapshotData.startTimeLocal;
-
-    this.endTimeStamp = snapshotData.endTimeStamp;
-    this.endDateLocal = snapshotData.endDateLocal;
-    this.endTimeLocal = snapshotData.endTimeLocal;
-
-    this.timeZoneOffset = snapshotData.timeZoneOffset;
+    this.vehicleType = d.vehicleType; // 👈 Restore
+    this.carId = d.carId;             // 👈 Restore
+    
+    this.startTimeStamp = d.startTimeStamp;
+    this.startDateLocal = d.startDateLocal;
+    this.startTimeLocal = d.startTimeLocal;
+    this.endTimeStamp = d.endTimeStamp;
+    this.endDateLocal = d.endDateLocal;
+    this.endTimeLocal = d.endTimeLocal;
+    this.timeZoneOffset = d.timeZoneOffset;
 
     this.version = snapshotRecord.version;
-    console.log(
-      `[Aggregate ${this.id}] Rehydrated from snapshot version ${this.version}`
-    );
   }
 
   rehydrateFromEvents(events) {
-    if (!events || events.length === 0) return;
-    console.log(
-      `[Aggregate ${this.id}] Rehydrating with ${
-        events.length
-      } events starting from version ${this.version + 1}`
-    );
-    events.forEach((eventData) => {
-      this._apply(eventData);
-      this.version++;
-    });
-    console.log(
-      `[Aggregate ${this.id}] Finished rehydrating. Final version: ${this.version}`
-    );
+    if (!events) return;
+    events.forEach(e => { this._apply(e); this.version++; });
   }
 
-  getUncommittedEvents() {
-    return this.uncommittedEvents;
-  }
+  getUncommittedEvents() { return this.uncommittedEvents; }
+  clearUncommittedEvents() { this.uncommittedEvents = []; }
+}
 
-  clearUncommittedEvents() {
-    this.uncommittedEvents = [];
-  }
+// --- Helper Function ---
+function getStatusCode(statusText) {
+  const map = {
+    'pending': '1',
+    'checked_in': '2',
+    'checked_out': '3',
+    'cancelled': '0'
+  };
+  return map[statusText] || '99';
 }

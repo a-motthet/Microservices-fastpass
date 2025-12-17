@@ -8,7 +8,7 @@ export class CreateSlotCommand {
    * @param {string} parkingSiteId - ID ของสถานที่จอดรถ
    * @param {string} floorId - ID ของชั้น
    */
-  constructor(name, floor, details, parkingSiteId, floorId) {
+  constructor(name, floor, details, parkingSiteId, floorId, slotNumber, vehicleType, zoneId) {
     if (!name) {
       throw new Error("Slot name is required.");
     }
@@ -20,5 +20,8 @@ export class CreateSlotCommand {
     this.details = details;
     this.parkingSiteId = parkingSiteId;
     this.floorId = floorId;
+    this.slotNumber = slotNumber; // 👈 New Property
+    this.vehicleType = vehicleType || 'car'; // 👈 New Property
+    this.zoneId = zoneId; // 👈 New Property
   }
 }

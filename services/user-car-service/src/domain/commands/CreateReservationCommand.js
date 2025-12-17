@@ -7,7 +7,9 @@ export class CreateReservationCommand {
       userId, slotId, parkingSiteId, floorId,
       startTimeStamp, startDateLocal, startTimeLocal,
       endTimeStamp, endDateLocal, endTimeLocal,
-      timeZoneOffset
+      timeZoneOffset,
+      vehicleType, // 👈 New Input
+      carId        // 👈 New Input
     } = data;
 
     // 1. Validation
@@ -34,5 +36,7 @@ export class CreateReservationCommand {
     this.endTimeLocal = endTimeLocal;
     
     this.timeZoneOffset = timeZoneOffset;
+    this.vehicleType = vehicleType || 'car'; // 👈 New Property
+    this.carId = carId || null;              // 👈 New Property
   }
 }

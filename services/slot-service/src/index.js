@@ -37,31 +37,42 @@ const createSlotHandler = new CreateSlotCommandHandler(
 
 /**
  * GET /slots
- * ดึงข้อมูลช่องจอดทั้งหมด (รองรับการกรองด้วย parkingSiteId)
- * API นี้ถูกเรียกใช้โดย user-car-service เพื่อคำนวณ Capacity
+ * ดึงข้อมูลช่องจอดทั้งหมด (รองรับการกรองด้วย parkingSiteId และ floorId)
  */
-app.get("/slots", async (req, res, next) => {
-  const { parkingSiteId, status, floorId } = req.query;
+app.get("/slots", async (req, res) => {
+  const { parkingSiteId, floorId, status } = req.query;
+  console.log(`[SlotSvc] GET /slots query:`, req.query);
 
   try {
-    let query = supabase.from("slots").select("id, name, floor, details, status, parking_site_id, floor_id");
+    // 🔽 แก้ไข: ลบ slot_location_id ออก เพราะ id คือรหัส 11 หลักแล้ว 🔽
+    let query = supabase
+      .from("slots")
+      .select("id, name, floor_id, details, status, parking_site_id");
 
-    if (parkingSiteId) query = query.eq("parking_site_id", parkingSiteId);
-    if (status) query = query.eq("status", status);
-    
+    // กรองตามสาขา
+    if (parkingSiteId) {
+      query = query.eq("parking_site_id", parkingSiteId);
+    }
+
+    // กรองตามชั้น
     if (floorId) {
       query = query.eq("floor_id", floorId);
     }
+    
+    // กรองตามสถานะ
+    if (status) {
+      query = query.eq("status", status);
+    }
+
     const { data, error } = await query;
 
     if (error) throw error;
     res.status(200).json(data);
   } catch (error) {
-    logger.error(`[SlotSvc] Error in GET /slots: ${error.message}`);
-    next(new AppError("Internal server error", 500));
+    console.error(`[SlotSvc] Error in GET /slots:`, error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
-
 /**
  * POST /slots
  * (Admin) สร้างช่องจอดใหม่
@@ -70,14 +81,13 @@ app.post("/slots", async (req, res, next) => {
   logger.info("[SlotSvc] Received POST /slots request");
   try {
     // รับ parkingSiteId เพิ่มเติม
-    const { name, floor, details, parkingSiteId } = req.body;
+    const { name, floor, details, parkingSiteId, floorId, slotNumber, vehicleType, zoneId } = req.body;
 
     if (!parkingSiteId) {
       return next(new AppError("parkingSiteId is required.", 400));
     }
 
-    // หมายเหตุ: ต้องแน่ใจว่า CreateSlotCommand ของคุณรองรับ parkingSiteId แล้ว
-    const command = new CreateSlotCommand(name, floor, details, parkingSiteId);
+    const command = new CreateSlotCommand(name, floor, details, parkingSiteId, floorId, slotNumber, vehicleType, zoneId);
     const result = await createSlotHandler.handle(command);
     res.status(201).json(result);
   } catch (error) {

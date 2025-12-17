@@ -62,8 +62,19 @@ export class SupabaseEventStore {
     );
 
     const eventsToSave = events.map((event, index) => {
-      const eventData = { ...event };
+      let eventData = { ...event };
       const eventType = event.constructor.name;
+
+      // 🔴 Custom Transformation for 'Reservation' Aggregate
+      if (aggregateType === 'Reservation') {
+         if (eventData.vehicleType) {
+            eventData.vehicle_type = eventData.vehicleType;
+         }
+         
+         // Remove carId as requested by user
+         delete eventData.carId;
+      }
+
       return {
         aggregate_id: aggregateId,
         aggregate_type: aggregateType,
