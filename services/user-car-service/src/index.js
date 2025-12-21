@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
+import { VEHICLE_TYPE, VEHICLE_TYPE_REVERSE } from "../../../packages/common/src/constants/vehicleTypes.js";
 
 // --- Imports: Commands & Handlers ---
 import { UpdateParkingStatusCommand } from "./domain/commands/UpdateParkingStatusCommand.js";
@@ -109,9 +110,9 @@ app.get("/debug-connection", (req, res) => {
   });
 });
 
-// GET /reservations/availability
+  // GET /reservations/availability
 app.get("/reservations/availability", async (req, res, next) => {
-  const { date, parkingSiteId, floorId } = req.query;
+  const { date, parkingSiteId, floorId, type } = req.query;
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return next(new AppError("Date parameter is required in YYYY-MM-DD format.", 400));
   if (!parkingSiteId) return next(new AppError("parkingSiteId parameter is required.", 400));
@@ -126,6 +127,7 @@ app.get("/reservations/availability", async (req, res, next) => {
       const slotServiceUrl = process.env.SLOT_SERVICE_URL;
       let slotQueryUrl = `${slotServiceUrl}/slots?parkingSiteId=${parkingSiteId}`;
       if (floorId) slotQueryUrl += `&floorId=${floorId}`;
+      if (type) slotQueryUrl += `&type=${type}`; // 👈 Forward type
       
       const response = await axios.get(slotQueryUrl);
       totalCapacity = response.data ? response.data.length : 0;
@@ -283,7 +285,8 @@ app.post("/reservations", async (req, res, next) => {
     startTimeStamp, startDateLocal, startTimeLocal,
     endTimeStamp, endDateLocal, endTimeLocal,
     timeZoneOffset,
-    vehicle_type
+    vehicle_type,
+    carId
   } = req.body;
 
   logger.info(`[API] POST /reservations for user: ${userId} at slot: ${slotId}`);
@@ -295,9 +298,32 @@ app.post("/reservations", async (req, res, next) => {
       return next(new AppError("Missing required date/time fields", 400));
   }
 
-  // 1. Get Vehicle Type from body
+  // 1. Resolve Vehicle Info
   let vehicleType = vehicle_type || 'car';
-  let carId = null; 
+  let vehicleTypeCode = 1;
+  let finalCarId = carId || null;
+
+  if (finalCarId) {
+    // Lookup car
+    const { data: carData } = await supabase
+        .from('cars')
+        .select('vehicle_type, vehicle_type_code')
+        .eq('id', finalCarId)
+        .single();
+    
+    if (carData) {
+        vehicleTypeCode = carData.vehicle_type_code ?? 1;
+        vehicleType = carData.vehicle_type || VEHICLE_TYPE_REVERSE[vehicleTypeCode] || 'car';
+    }
+  } else {
+     // Fallback: Try to parse string
+     if (typeof vehicleType === 'string') {
+         vehicleTypeCode = VEHICLE_TYPE[vehicleType.toUpperCase()] !== undefined ? VEHICLE_TYPE[vehicleType.toUpperCase()] : 1;
+     } else if (typeof vehicleType === 'number') {
+         vehicleTypeCode = vehicleType;
+         vehicleType = VEHICLE_TYPE_REVERSE[vehicleTypeCode] || 'car';
+     }
+  } 
   
   // 2. Lookup Slot Details (Parking Site & Floor)
   let parkingSiteId, floorId, slotName;
@@ -355,7 +381,8 @@ app.post("/reservations", async (req, res, next) => {
       parkingSiteId, 
       floorId,
       vehicleType, 
-      carId
+      carId: finalCarId,
+      vehicleTypeCode
     });
 
     const result = await createReservationHandler.handle(command);
@@ -367,6 +394,48 @@ app.post("/reservations", async (req, res, next) => {
 
   } catch (error) {
     logger.error(`[Error] POST /reservations:`, error);
+    next(error);
+  }
+});
+
+// POST /cars
+app.post("/cars", async (req, res, next) => {
+  try {
+    const { userId, licensePlate, type, brand, model } = req.body;
+
+    if (!userId || !licensePlate) {
+      return next(new AppError("Missing required fields (userId, licensePlate)", 400));
+    }
+
+    // 1. Convert Input to Code
+    let typeCode = VEHICLE_TYPE.CAR; // Default = 1
+    if (typeof type === 'string') {
+      typeCode = VEHICLE_TYPE[type.toUpperCase()] !== undefined ? VEHICLE_TYPE[type.toUpperCase()] : VEHICLE_TYPE.CAR;
+    } else if (typeof type === 'number') {
+      typeCode = type;
+    }
+
+    // 2. Insert DB
+    const { data, error } = await supabase
+      .from('cars')
+      .insert({
+        user_id: userId,
+        license_plate: licensePlate,
+        vehicle_type_code: typeCode,
+        vehicle_type: VEHICLE_TYPE_REVERSE[typeCode] || 'car',
+        brand,
+        model
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.status(201).json(data);
+  } catch (error) {
+    if (error.code === '23505') { // Unique violation
+        return next(new AppError("License plate already exists.", 409));
+    }
     next(error);
   }
 });

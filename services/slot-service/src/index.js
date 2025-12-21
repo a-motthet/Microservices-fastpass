@@ -4,7 +4,7 @@ import express from "express";
 import { createClient } from "@supabase/supabase-js";
 
 // Infrastructure
-import { SupabaseEventStore, RabbitMQAdapter, createLogger, AppError, errorHandler } from "@parking-reservation/common";
+import { SupabaseEventStore, RabbitMQAdapter, createLogger, AppError, errorHandler, VEHICLE_TYPE } from "@parking-reservation/common";
 // (SnapshotStore ถูกคัดลอกมาด้วย แต่เรายังไม่ได้ใช้ใน CreateSlot)
 
 // Projections
@@ -58,6 +58,18 @@ app.get("/slots", async (req, res) => {
     if (floorId) {
       query = query.eq("floor_id", floorId);
     }
+
+    // กรองตามประเภทรถ (vehicle_type_code)
+    const { type } = req.query;
+    let targetTypeCode = 1; // Default = Car
+    if (type !== undefined) {
+       if (!isNaN(type)) {
+          targetTypeCode = parseInt(type);
+       } else {
+          targetTypeCode = VEHICLE_TYPE[type.toUpperCase()] !== undefined ? VEHICLE_TYPE[type.toUpperCase()] : 1;
+       }
+    }
+    query = query.eq('vehicle_type_code', targetTypeCode);
     
     // กรองตามสถานะ
     if (status) {

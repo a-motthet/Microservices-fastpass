@@ -38,5 +38,6 @@ export class CreateReservationCommand {
     this.timeZoneOffset = timeZoneOffset;
     this.vehicleType = vehicleType || 'car'; // 👈 New Property
     this.carId = carId || null;              // 👈 New Property
+    this.vehicleTypeCode = data.vehicleTypeCode || 1; // Default to CAR (1)
   }
 }

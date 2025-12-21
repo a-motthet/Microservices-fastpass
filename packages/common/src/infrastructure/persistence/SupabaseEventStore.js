@@ -66,15 +66,19 @@ export class SupabaseEventStore {
       const eventType = event.constructor.name;
 
       // 🔴 Custom Transformation for 'Reservation' Aggregate
+      // 🔴 Custom Transformation for 'Reservation' Aggregate
       if (aggregateType === 'Reservation') {
-         if (eventData.vehicleType) {
-            eventData.vehicle_type = eventData.vehicleType;
-         }
-         
+         // User requested EXACT format:
+         // Remove redundant/unwanted fields
+         delete eventData.vehicleType; 
+         delete eventData.vehicle_type;
+         delete eventData.status; 
          delete eventData.carId;
          delete eventData.floorId; 
          delete eventData.parkingSiteId; 
-         delete eventData.reservedAt; // 👈 Removed
+         delete eventData.reservedAt; 
+         
+         // Ensure vehicleTypeCode is present (it is in the event object)
       }
 
       return {

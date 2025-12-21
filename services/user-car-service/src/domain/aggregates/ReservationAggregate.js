@@ -15,9 +15,9 @@ export class ReservationAggregate {
     this.status = null;
     this.statusCode = null;
 
-    // Vehicle Info
     this.vehicleType = null; // 👈 New State
     this.carId = null;       // 👈 New State
+    this.vehicleTypeCode = null; // 👈 New State
 
     // Time Components
     this.startTimeStamp = null;
@@ -81,7 +81,8 @@ export class ReservationAggregate {
       
       dateLocal, // reservedAtDateLocal
       timeLocal, // reservedAtTimeLocal
-      timeStamp  // reservedAtTimeStamp
+      timeStamp,  // reservedAtTimeStamp
+      command.vehicleTypeCode // 👈 Pass vehicleTypeCode
     );
 
     this._applyAndRecord(event);
@@ -136,6 +137,7 @@ export class ReservationAggregate {
         
         this.vehicleType = data.vehicleType || 'car'; // 👈 Update State
         this.carId = data.carId || null;              // 👈 Update State
+        this.vehicleTypeCode = data.vehicleTypeCode || 1; // 👈 Update State
         
         this.startTimeStamp = data.startTimeStamp;
         this.startDateLocal = data.startDateLocal;
@@ -165,6 +167,7 @@ export class ReservationAggregate {
       
       vehicleType: this.vehicleType, // 👈 Snapshot
       carId: this.carId,             // 👈 Snapshot
+      vehicleTypeCode: this.vehicleTypeCode, // 👈 Snapshot
       
       startTimeStamp: this.startTimeStamp,
       startDateLocal: this.startDateLocal,
@@ -190,6 +193,7 @@ export class ReservationAggregate {
 
     this.vehicleType = d.vehicleType; // 👈 Restore
     this.carId = d.carId;             // 👈 Restore
+    this.vehicleTypeCode = d.vehicleTypeCode; // 👈 Restore
     
     this.startTimeStamp = d.startTimeStamp;
     this.startDateLocal = d.startDateLocal;

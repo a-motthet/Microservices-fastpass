@@ -228,7 +228,9 @@ CREATE TABLE IF NOT EXISTS "public"."cars" (
     "model" character varying,
     "created_at" timestamp with time zone DEFAULT "now"(),
     "updated_at" timestamp with time zone DEFAULT "now"(),
-    "vehicle_type" "public"."vehicle_type" DEFAULT 'car'::"public"."vehicle_type" NOT NULL
+    "vehicle_type" "public"."vehicle_type" DEFAULT 'car'::"public"."vehicle_type" NOT NULL,
+    "vehicle_type_code" smallint DEFAULT 1,
+    CONSTRAINT "cars_vehicle_type_code_check" CHECK (("vehicle_type_code" = ANY (ARRAY[0, 1, 2])))
 );
 
 
@@ -310,7 +312,8 @@ CREATE TABLE IF NOT EXISTS "public"."recent_activities" (
     "end_time" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"(),
     "updated_at" timestamp with time zone DEFAULT "now"(),
-    "vehicle_type" "public"."vehicle_type"
+    "vehicle_type" "public"."vehicle_type",
+    "vehicle_type_code" smallint DEFAULT 1
 );
 
 
@@ -346,7 +349,9 @@ CREATE TABLE IF NOT EXISTS "public"."reservations" (
     "updated_at" timestamp with time zone DEFAULT "now"(),
     "status_code" "text" DEFAULT '1'::"text",
     "vehicle_type" "public"."vehicle_type" DEFAULT 'car'::"public"."vehicle_type" NOT NULL,
-    "car_id" "uuid"
+    "car_id" "uuid",
+    "vehicle_type_code" smallint DEFAULT 1,
+    CONSTRAINT "reservations_vehicle_type_code_check" CHECK (("vehicle_type_code" = ANY (ARRAY[0, 1, 2])))
 );
 
 
@@ -394,7 +399,9 @@ CREATE TABLE IF NOT EXISTS "public"."slots" (
     "status" "public"."slot_status" DEFAULT 'available'::"public"."slot_status" NOT NULL,
     "details" "text",
     "version" integer DEFAULT 1 NOT NULL,
-    "vehicle_type" "public"."vehicle_type" DEFAULT 'car'::"public"."vehicle_type" NOT NULL
+    "vehicle_type" "public"."vehicle_type" DEFAULT 'car'::"public"."vehicle_type" NOT NULL,
+    "vehicle_type_code" smallint DEFAULT 1,
+    CONSTRAINT "slots_vehicle_type_code_check" CHECK (("vehicle_type_code" = ANY (ARRAY[0, 1, 2])))
 );
 
 

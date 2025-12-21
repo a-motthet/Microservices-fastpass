@@ -12,7 +12,8 @@ export class ReservationCreatedEvent {
     carId,
     reservedAtDateLocal, // 👈 New
     reservedAtTimeLocal, // 👈 New
-    reservedAtTimeStamp  // 👈 New
+    reservedAtTimeStamp, // 👈 New
+    vehicleTypeCode // 👈 New
   ) {
     // --- Group 1: IDs (เอา ID ทั้งหมดขึ้นก่อน) ---
     this.reservationId = reservationId;
@@ -45,6 +46,7 @@ export class ReservationCreatedEvent {
     this.reservedAtTimeStamp = reservedAtTimeStamp;
 
     this.vehicleType = vehicleType || 'car'; 
-    this.carId = carId || null;              
+    this.carId = carId || null;
+    this.vehicleTypeCode = vehicleTypeCode || 1;
   }
 }
