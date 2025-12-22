@@ -110,26 +110,38 @@ app.get("/debug-connection", (req, res) => {
   });
 });
 
-  // GET /availability/timeline
+  // POST /availability/timeline
 app.post('/availability/timeline', async (req, res, next) => {
   try {
-    const { siteId, buildingId, floorId, zoneIds, vehicleTypeCode, date } = req.body;
+    const { siteId, buildingId, floorId, zoneIds, vehicleTypeCode, date, intervalMinutes } = req.body;
     
+    // Default Interval = 60 minutes
+    const interval = intervalMinutes && parseInt(intervalMinutes) > 0 ? parseInt(intervalMinutes) : 60;
+
     // Default date to 'Asia/Bangkok' current date if not provided
-    // This prevents 'new Date().toISOString()' returning yesterday during late night/early morning UTC
     let searchDate = date;
     if (!searchDate) {
         const now = new Date();
-        // Shift to UTC+7 (simplest way without libraries like moment/luxon)
         const thaiTime = new Date(now.getTime() + (7 * 60 * 60 * 1000)); 
         searchDate = thaiTime.toISOString().split('T')[0];
     }
 
     if (!siteId) return next(new AppError("siteId is required", 400));
-    if (!buildingId) return next(new AppError("buildingId is required", 400)); // USER REQUEST: Must specify building
-
-    // Validation for vehicleTypeCode if strictness is needed (0=Moto, 1=Car, 2=EV)
+    if (!buildingId) return next(new AppError("buildingId is required", 400));
     if (vehicleTypeCode === undefined) return next(new AppError("vehicleTypeCode is required (0, 1, or 2)", 400));
+
+    // --- Step 0: Get Site Operating Hours ---
+    const { data: siteInfo, error: siteError } = await supabase
+        .from('parking_sites')
+        .select('opening_time, closing_time')
+        .eq('id', siteId)
+        .single();
+    
+    if (siteError) throw siteError;
+
+    // Default to 24-hour if null
+    const openTimeStr = siteInfo?.opening_time || "00:00";
+    const closeTimeStr = siteInfo?.closing_time || "23:59";
 
     // Resolve Building -> Floors
     let buildingFloorIds = [];
@@ -146,23 +158,19 @@ app.post('/availability/timeline', async (req, res, next) => {
         }
     }
 
-    // --- Step 1: หา Total Capacity ---
-    // ใช้ Slot Service หรือ Query ตรงๆ? User Car Service มี access ไปที่ supabase เดียวกัน ถ้า table structure อนุญาต
-    // ในที่นี้เรา access ตาราง slots ได้ (Supabase shared)
+    // --- Step 1: Query Total Capacity ---
     let capacityQuery = supabase
       .from('slots')
       .select('id', { count: 'exact', head: true })
       .eq('parking_site_id', siteId)
-      .neq('status', 'maintenance'); // นับทุกช่องที่ใช้งานได้ (ไม่เสีย/ปิดปรับปรุง) รวมทั้งที่ Occupied/Reserved อยู่ด้วย
+      .neq('status', 'maintenance');
 
-    // Filter by Building (via floors)
     if (buildingFloorIds.length > 0) {
         capacityQuery = capacityQuery.in('floor_id', buildingFloorIds);
     }
     
     if (vehicleTypeCode !== undefined) capacityQuery = capacityQuery.eq('vehicle_type_code', vehicleTypeCode);
     
-    // Support Multiple Floors
     if (floorId) {
        const isArray = Array.isArray(floorId);
        const isAll = isArray 
@@ -178,7 +186,6 @@ app.post('/availability/timeline', async (req, res, next) => {
        }
     }
     
-    // Support Multiple Zones (Array)
     if (zoneIds && Array.isArray(zoneIds) && zoneIds.length > 0) {
         capacityQuery = capacityQuery.in('zone_id', zoneIds);
     }
@@ -186,7 +193,7 @@ app.post('/availability/timeline', async (req, res, next) => {
     const { count: totalCapacity, error: capError } = await capacityQuery;
     if (capError) throw capError;
 
-    // --- Step 2: ดึงข้อมูลการจองในวันนั้น ---
+    // --- Step 2: Query Reservations ---
     const startOfDay = `${searchDate}T00:00:00`;
     const endOfDay = `${searchDate}T23:59:59`;
 
@@ -201,12 +208,10 @@ app.post('/availability/timeline', async (req, res, next) => {
 
     if (vehicleTypeCode !== undefined) reservationQuery = reservationQuery.eq('vehicle_type_code', vehicleTypeCode);
     
-    // Filter by Building (via floors)
     if (buildingFloorIds.length > 0) {
         reservationQuery = reservationQuery.in('floor_id', buildingFloorIds);
     }
 
-    // Support Multiple Floors (Reservations)
     if (floorId) {
         const isArray = Array.isArray(floorId);
         const isAll = isArray 
@@ -222,7 +227,6 @@ app.post('/availability/timeline', async (req, res, next) => {
         }
     }
 
-    // Filter Reservations by Zone(s) via Slot lookup
     if (zoneIds && Array.isArray(zoneIds) && zoneIds.length > 0) {
         const { data: slotsInZones } = await supabase.from('slots').select('id').in('zone_id', zoneIds);
         if (slotsInZones && slotsInZones.length > 0) {
@@ -236,34 +240,71 @@ app.post('/availability/timeline', async (req, res, next) => {
     const { data: reservations, error: resError } = await reservationQuery;
     if (resError) throw resError;
 
-    // --- Step 3: คำนวณรายชั่วโมง ---
+    // --- Step 3: Loop Calculate Availability (00:00 - 24:00) ---
     const slots = [];
-    for (let h = 8; h < 20; h++) { // 08:00 - 20:00
-      // Construct Date with Fixed Offset +07:00 for consistency with Thailand context implied
-      const timeStr = `${h.toString().padStart(2,'0')}:00`;
-      const slotStartIso = `${searchDate}T${timeStr}:00+07:00`;
-      const slotEndIso = `${searchDate}T${(h+1).toString().padStart(2,'0')}:00:00+07:00`;
-      
-      const slotStart = new Date(slotStartIso); 
-      const slotEnd = new Date(slotEndIso);
+    
+    // Helpers for time comparison
+    const [openH, openM] = openTimeStr.split(':').map(Number);
+    const [closeH, closeM] = closeTimeStr.split(':').map(Number);
+    const openMinutes = openH * 60 + openM;
+    const closeMinutes = closeH * 60 + closeM;
 
-      // นับคนจองที่เวลาทับกับ Slot นี้
-      const reservedCount = reservations.filter(r => {
-        const rStart = new Date(r.start_time);
-        const rEnd = new Date(r.end_time);
-        // Overlap logic: Start < SlotEnd && End > SlotStart
-        return rStart < slotEnd && rEnd > slotStart;
-      }).length;
+    // Start at 0 minutes (00:00), End at 1440 minutes (24:00)
+    for (let currentMins = 0; currentMins < 1440; currentMins += interval) {
+        // Calculate Slot Start Time
+        const h = Math.floor(currentMins / 60);
+        const m = currentMins % 60;
+        const timeStr = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
 
-      const available = Math.max(0, totalCapacity - reservedCount);
+        // Calculate Next Slot Time (for Overlap check)
+        const nextMins = currentMins + interval;
+        const nh = Math.floor(nextMins / 60);
+        const nm = nextMins % 60;
+        // Handle 24:00 case logic if needed, usually just stops or wraps
+        // For query:
+        // Start: searchDate T HH:MM:00 +07:00
+        // End:   searchDate T HH:MM:00 +07:00 (Next)
+        
+        const slotStartIso = `${searchDate}T${timeStr}:00+07:00`;
+        // Next time string (if nextMins >= 1440, it's next day 00:00, but we just use 24:00 concept or wrap)
+        // Simplest: use Date object addition
+        const slotStartObj = new Date(slotStartIso);
+        const slotEndObj = new Date(slotStartObj.getTime() + (interval * 60 * 1000));
 
-      slots.push({
-        timeLabel: timeStr,
-        totalCapacity,
-        reservedCount,
-        availableCount: available,
-        status: available === 0 ? 'full' : 'available'
-      });
+        // --- Operating Hours Check ---
+        // Basic Logic: If Slot Start is < Open OR >= Close => Closed?
+        // Or if ANY part of the slot is outside? 
+        // Usage usually: "Is this slot starts within operating hours?"
+        // Strict: Slot must be fully within?
+        // Let's use: If Slot Start Time is < Open OR >= Close => Status Closed.
+        let status = 'available';
+        let available = 0;
+        let reservedCount = 0;
+        let effectiveTotal = totalCapacity;
+
+        if (currentMins < openMinutes || currentMins >= closeMinutes) {
+            status = 'closed';
+            effectiveTotal = 0; // Show 0 available if closed? Or just status closed?
+                                // Requirement: set status = closed
+        } else {
+             // Calculate Reservations
+             reservedCount = reservations.filter(r => {
+                const rStart = new Date(r.start_time);
+                const rEnd = new Date(r.end_time);
+                return rStart < slotEndObj && rEnd > slotStartObj;
+             }).length;
+
+             available = Math.max(0, totalCapacity - reservedCount);
+             if (available === 0) status = 'full';
+        }
+
+        slots.push({
+          timeLabel: timeStr,
+          totalCapacity: effectiveTotal,
+          reservedCount,
+          availableCount: available,
+          status
+        });
     }
 
     res.json({
@@ -272,7 +313,9 @@ app.post('/availability/timeline', async (req, res, next) => {
         vehicleTypeCode,
         siteId,
         floorId,
-        zoneIds
+        zoneIds,
+        intervalMinutes: interval,
+        operatingHours: { open: openTimeStr, close: closeTimeStr }
       },
       timeline: slots
     });
