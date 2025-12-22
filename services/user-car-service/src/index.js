@@ -110,7 +110,456 @@ app.get("/debug-connection", (req, res) => {
   });
 });
 
-  // GET /reservations/availability
+  // GET /availability/timeline
+app.post('/availability/timeline', async (req, res, next) => {
+  try {
+    const { siteId, buildingId, floorId, zoneIds, vehicleTypeCode, date } = req.body;
+    
+    // Default date to 'Asia/Bangkok' current date if not provided
+    // This prevents 'new Date().toISOString()' returning yesterday during late night/early morning UTC
+    let searchDate = date;
+    if (!searchDate) {
+        const now = new Date();
+        // Shift to UTC+7 (simplest way without libraries like moment/luxon)
+        const thaiTime = new Date(now.getTime() + (7 * 60 * 60 * 1000)); 
+        searchDate = thaiTime.toISOString().split('T')[0];
+    }
+
+    if (!siteId) return next(new AppError("siteId is required", 400));
+    if (!buildingId) return next(new AppError("buildingId is required", 400)); // USER REQUEST: Must specify building
+
+    // Validation for vehicleTypeCode if strictness is needed (0=Moto, 1=Car, 2=EV)
+    if (vehicleTypeCode === undefined) return next(new AppError("vehicleTypeCode is required (0, 1, or 2)", 400));
+
+    // Resolve Building -> Floors
+    let buildingFloorIds = [];
+    if (buildingId) {
+        let bIds = Array.isArray(buildingId) ? buildingId : [buildingId];
+        const { data: floorsInBuildings, error: floorError } = await supabase
+            .from('floors')
+            .select('id')
+            .in('building_id', bIds);
+        
+        if (floorError) throw floorError;
+        if (floorsInBuildings) {
+            buildingFloorIds = floorsInBuildings.map(f => f.id);
+        }
+    }
+
+    // --- Step 1: หา Total Capacity ---
+    // ใช้ Slot Service หรือ Query ตรงๆ? User Car Service มี access ไปที่ supabase เดียวกัน ถ้า table structure อนุญาต
+    // ในที่นี้เรา access ตาราง slots ได้ (Supabase shared)
+    let capacityQuery = supabase
+      .from('slots')
+      .select('id', { count: 'exact', head: true })
+      .eq('parking_site_id', siteId)
+      .neq('status', 'maintenance'); // นับทุกช่องที่ใช้งานได้ (ไม่เสีย/ปิดปรับปรุง) รวมทั้งที่ Occupied/Reserved อยู่ด้วย
+
+    // Filter by Building (via floors)
+    if (buildingFloorIds.length > 0) {
+        capacityQuery = capacityQuery.in('floor_id', buildingFloorIds);
+    }
+    
+    if (vehicleTypeCode !== undefined) capacityQuery = capacityQuery.eq('vehicle_type_code', vehicleTypeCode);
+    
+    // Support Multiple Floors
+    if (floorId) {
+       const isArray = Array.isArray(floorId);
+       const isAll = isArray 
+           ? floorId.some(f => f && f.toUpperCase() === 'ALL') 
+           : (floorId.toUpperCase() === 'ALL');
+
+       if (!isAll) {
+           if (isArray) {
+               capacityQuery = capacityQuery.in('floor_id', floorId);
+           } else {
+               capacityQuery = capacityQuery.eq('floor_id', floorId);
+           }
+       }
+    }
+    
+    // Support Multiple Zones (Array)
+    if (zoneIds && Array.isArray(zoneIds) && zoneIds.length > 0) {
+        capacityQuery = capacityQuery.in('zone_id', zoneIds);
+    }
+
+    const { count: totalCapacity, error: capError } = await capacityQuery;
+    if (capError) throw capError;
+
+    // --- Step 2: ดึงข้อมูลการจองในวันนั้น ---
+    const startOfDay = `${searchDate}T00:00:00`;
+    const endOfDay = `${searchDate}T23:59:59`;
+
+    let reservationQuery = supabase
+      .from('reservations')
+      .select('start_time, end_time, slot_id')
+      .eq('parking_site_id', siteId)
+      .neq('status', 'cancelled')
+      .neq('status', 'checked_out')
+      .lt('start_time', endOfDay)
+      .gt('end_time', startOfDay);
+
+    if (vehicleTypeCode !== undefined) reservationQuery = reservationQuery.eq('vehicle_type_code', vehicleTypeCode);
+    
+    // Filter by Building (via floors)
+    if (buildingFloorIds.length > 0) {
+        reservationQuery = reservationQuery.in('floor_id', buildingFloorIds);
+    }
+
+    // Support Multiple Floors (Reservations)
+    if (floorId) {
+        const isArray = Array.isArray(floorId);
+        const isAll = isArray 
+            ? floorId.some(f => f && f.toUpperCase() === 'ALL') 
+            : (floorId.toUpperCase() === 'ALL');
+ 
+        if (!isAll) {
+            if (isArray) {
+                reservationQuery = reservationQuery.in('floor_id', floorId);
+            } else {
+                reservationQuery = reservationQuery.eq('floor_id', floorId);
+            }
+        }
+    }
+
+    // Filter Reservations by Zone(s) via Slot lookup
+    if (zoneIds && Array.isArray(zoneIds) && zoneIds.length > 0) {
+        const { data: slotsInZones } = await supabase.from('slots').select('id').in('zone_id', zoneIds);
+        if (slotsInZones && slotsInZones.length > 0) {
+            const targetSlotIds = slotsInZones.map(s => s.id);
+            reservationQuery = reservationQuery.in('slot_id', targetSlotIds);
+        } else {
+             reservationQuery = reservationQuery.eq('slot_id', 'nomatch'); 
+        }
+    }
+
+    const { data: reservations, error: resError } = await reservationQuery;
+    if (resError) throw resError;
+
+    // --- Step 3: คำนวณรายชั่วโมง ---
+    const slots = [];
+    for (let h = 8; h < 20; h++) { // 08:00 - 20:00
+      // Construct Date with Fixed Offset +07:00 for consistency with Thailand context implied
+      const timeStr = `${h.toString().padStart(2,'0')}:00`;
+      const slotStartIso = `${searchDate}T${timeStr}:00+07:00`;
+      const slotEndIso = `${searchDate}T${(h+1).toString().padStart(2,'0')}:00:00+07:00`;
+      
+      const slotStart = new Date(slotStartIso); 
+      const slotEnd = new Date(slotEndIso);
+
+      // นับคนจองที่เวลาทับกับ Slot นี้
+      const reservedCount = reservations.filter(r => {
+        const rStart = new Date(r.start_time);
+        const rEnd = new Date(r.end_time);
+        // Overlap logic: Start < SlotEnd && End > SlotStart
+        return rStart < slotEnd && rEnd > slotStart;
+      }).length;
+
+      const available = Math.max(0, totalCapacity - reservedCount);
+
+      slots.push({
+        timeLabel: timeStr,
+        totalCapacity,
+        reservedCount,
+        availableCount: available,
+        status: available === 0 ? 'full' : 'available'
+      });
+    }
+
+    res.json({
+      meta: {
+        requestDate: searchDate,
+        vehicleTypeCode,
+        siteId,
+        floorId,
+        zoneIds
+      },
+      timeline: slots
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /availability/summary
+app.post('/availability/summary', async (req, res, next) => {
+  try {
+    const { siteId, buildingId, floorId, vehicleTypeCode, date } = req.body;
+    const searchDate = date || new Date().toISOString().split('T')[0];
+    
+    if (!siteId) return next(new AppError("siteId is required", 400));
+    if (!buildingId) return next(new AppError("buildingId is required", 400)); // USER REQUEST: Must specify building
+
+    // Resolve Building -> Floors
+    let buildingFloorIds = [];
+    if (buildingId) {
+        let bIds = Array.isArray(buildingId) ? buildingId : [buildingId];
+        const { data: floorsInBuildings, error: floorError } = await supabase
+            .from('floors')
+            .select('id')
+            .in('building_id', bIds);
+        
+        if (floorError) throw floorError;
+        if (floorsInBuildings) {
+            buildingFloorIds = floorsInBuildings.map(f => f.id);
+        }
+    }
+
+    // --- Step 1: หา Capacity ของแต่ละ Zone ---
+    // เพื่อความง่าย: ดึง slot ทั้งหมดที่ available มาก่อน
+    let slotsQuery = supabase
+      .from('slots')
+      .select('zone_id, status, zones(name)') // Join to get Zone Name if possible
+      .eq('parking_site_id', siteId)
+      .eq('vehicle_type_code', vehicleTypeCode)
+      .neq('status', 'maintenance'); // Count valid slots (available + occupied)
+
+    // Filter by Building (via floors)
+    if (buildingFloorIds.length > 0) {
+        slotsQuery = slotsQuery.in('floor_id', buildingFloorIds);
+    }
+
+    if (floorId) {
+        const isArray = Array.isArray(floorId);
+        const isAll = isArray 
+            ? floorId.some(f => f && f.toUpperCase() === 'ALL') 
+            : (floorId.toUpperCase() === 'ALL');
+
+        if (!isAll) {
+            if (isArray) {
+                slotsQuery = slotsQuery.in('floor_id', floorId);
+            } else {
+                slotsQuery = slotsQuery.eq('floor_id', floorId);
+            }
+        }
+    }
+    
+    const { data: allSlots, error: slotError } = await slotsQuery;
+    if (slotError) throw slotError;
+
+    // Grouping: นับ Capacity รายโซน (Group by Name)
+    const statsByName = {}; 
+    const slotToZoneName = {}; // Map slot_id -> zoneName for reservation checking
+
+    allSlots.forEach(s => {
+      // Use zone name as key. If missing, fallback to 'Unknown'
+      const zName = s.zones ? s.zones.name : 'Unknown Zone';
+      
+      // Store mapping for reservation step
+      slotToZoneName[s.id] = zName;
+
+      if (!statsByName[zName]) {
+         statsByName[zName] = { 
+            total: 0, 
+            reserved: 0,
+            zoneName: zName,
+            zoneIds: new Set() // Keep track of original IDs just in case
+         };
+      }
+      statsByName[zName].total++;
+      if (s.zone_id) statsByName[zName].zoneIds.add(s.zone_id); // Collect IDs
+    });
+
+    // --- Step 2: นับยอดจอง (Reservations) ของวันนั้น ---
+    const startOfDay = `${searchDate}T00:00:00`;
+    const endOfDay = `${searchDate}T23:59:59`;
+
+    let resQuery = supabase
+      .from('reservations')
+      .select('slot_id') 
+      .eq('parking_site_id', siteId)
+      .eq('vehicle_type_code', vehicleTypeCode)
+      .neq('status', 'cancelled')
+      .neq('status', 'checked_out')
+      .lt('start_time', endOfDay)
+      .gt('end_time', startOfDay);
+
+    if (floorId) {
+        if (Array.isArray(floorId)) {
+            if (!floorId.some(f => f.toUpperCase() === 'ALL')) {
+                resQuery = resQuery.in('floor_id', floorId);
+            }
+        } else {
+            resQuery = resQuery.eq('floor_id', floorId);
+        }
+    }
+
+    // Filter by Building (via floors)
+    if (buildingFloorIds.length > 0) {
+        resQuery = resQuery.in('floor_id', buildingFloorIds);
+    }
+
+    const { data: reservations, error: resError } = await resQuery;
+    if (resError) throw resError;
+
+    // Create a Set of booked Slot IDs
+    const bookedSlotIds = new Set(reservations.map(r => r.slot_id));
+
+    // Calculate reserved count by checking all slots
+    // Iterate 'allSlots' again to see if they are booked
+    allSlots.forEach(s => {
+        if (bookedSlotIds.has(s.id)) {
+            const zName = slotToZoneName[s.id];
+            if (statsByName[zName]) {
+                statsByName[zName].reserved++;
+            }
+        }
+    });
+
+    // --- Step 3: Format Response ---
+    const zonesResult = Object.keys(statsByName).map(name => {
+      const stat = statsByName[name];
+      const available = Math.max(0, stat.total - stat.reserved);
+      return {
+        zoneName: name, // Grouped Name
+        zoneIds: Array.from(stat.zoneIds), // Returns array of IDs involved
+        totalCapacity: stat.total,
+        reservedCount: stat.reserved,
+        availableCount: available,
+        status: available === 0 ? 'full' : 'available'
+      };
+    });
+
+    // ยอดรวมทั้งหมด
+    const totalAvailable = zonesResult.reduce((sum, z) => sum + z.availableCount, 0);
+
+    res.json({
+      siteId,
+      meta: { requestDate: searchDate },
+      summary: {
+        totalAvailable,
+        zones: zonesResult
+      }
+    });
+
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /reservations/availability/zones (Deprecated?)
+  app.get('/reservations/availability/zones', async (req, res, next) => {
+  const { date, parkingSiteId, floorId, type } = req.query;
+
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return next(new AppError("Date parameter is required in YYYY-MM-DD format.", 400));
+  if (!parkingSiteId) return next(new AppError("parkingSiteId parameter is required.", 400));
+
+  try {
+    const { data: siteData } = await supabase.from('parking_sites').select('timezone, timezone_offset').eq('id', parkingSiteId).single();
+    const siteTimeZone = siteData?.timezone || 'Asia/Bangkok';
+    const siteOffset = siteData?.timezone_offset || 420;
+
+    // 1. Fetch Slots (with Zone Info)
+    let slots = [];
+    try {
+      const slotServiceUrl = process.env.SLOT_SERVICE_URL;
+      let slotQueryUrl = `${slotServiceUrl}/slots?parkingSiteId=${parkingSiteId}`;
+      if (floorId) slotQueryUrl += `&floorId=${floorId}`;
+      if (type) slotQueryUrl += `&type=${type}`;
+      
+      const response = await axios.get(slotQueryUrl);
+      slots = response.data || [];
+      
+      if (slots.length === 0) return next(new AppError(`No slots found.`, 404));
+    } catch (error) {
+      logger.error(`Slot Service Error:`, error.message);
+      return next(new AppError("Cannot determine capacity.", 500));
+    }
+
+    // 2. Group Slots by Zone
+    const zonesMap = {};
+    slots.forEach(slot => {
+        const zId = slot.zone_id || 'uncategorized';
+        const zName = slot.zones?.name || 'Uncategorized';
+        
+        if (!zonesMap[zId]) {
+            zonesMap[zId] = {
+                zoneId: zId,
+                zoneName: zName,
+                totalCapacity: 0,
+                slots: []
+            };
+        }
+        zonesMap[zId].totalCapacity++;
+        zonesMap[zId].slots.push(slot.id);
+    });
+
+    // 3. Fetch Reservations
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+    let query = supabase
+      .from("reservations")
+      .select("start_time, end_time, slot_id")
+      .eq("parking_site_id", parkingSiteId)
+      .lt("start_time", dayEnd.toISOString())
+      .gt("end_time", dayStart.toISOString())
+      .in("status", ["pending", "checked_in"]);
+
+    if (floorId) query = query.eq("floor_id", floorId);
+    const { data: bookedSlots, error } = await query;
+    if (error) throw error;
+
+    // 4. Calculate Availability Per Zone Per Hour
+    const resultZones = [];
+    const timeZoneOffsetStr = formatOffset(siteOffset);
+
+    for (const zId in zonesMap) {
+        const zone = zonesMap[zId];
+        const timeSlots = [];
+        const zoneSlotIds = new Set(zone.slots);
+
+        for (let i = 0; i < 24; i++) {
+            const slotStart = new Date(dayStart); slotStart.setUTCHours(i);
+            const slotEnd = new Date(dayStart); slotEnd.setUTCHours(i + 1);
+            
+            const startFmt = getDateTimeParts(slotStart.toISOString(), siteTimeZone);
+            const endFmt = getDateTimeParts(slotEnd.toISOString(), siteTimeZone);
+            const displayText = `${startFmt.timeLocal.slice(0,5)} - ${endFmt.timeLocal.slice(0,5)}`;
+
+            const slotStartTs = Math.floor(slotStart.getTime() / 1000) * 1000;
+            const slotEndTs = Math.floor(slotEnd.getTime() / 1000) * 1000;
+
+            // Count bookings for this zone in this hour
+            const bookedCount = bookedSlots ? bookedSlots.filter(booking => {
+                // Must be in this zone
+                if (!zoneSlotIds.has(booking.slot_id)) return false;
+
+                const bStart = new Date(booking.start_time).getTime();
+                const bEnd = new Date(booking.end_time).getTime();
+                return bStart < slotEndTs && bEnd > slotStartTs;
+            }).length : 0;
+
+            const remaining = zone.totalCapacity - bookedCount;
+
+            timeSlots.push({
+                startTimeStamp: startFmt.timeStamp,
+                startDateLocal: startFmt.dateLocal,
+                startTimeLocal: startFmt.timeLocal,
+                endTimeStamp: endFmt.timeStamp,
+                endDateLocal: endFmt.dateLocal,
+                endTimeLocal: endFmt.timeLocal,
+                timeZoneOffset: timeZoneOffsetStr,
+                displayText,
+                isAvailable: remaining > 0,
+                totalCapacity: zone.totalCapacity,
+                bookedCount,
+                remainingCount: remaining > 0 ? remaining : 0
+            });
+        }
+        resultZones.push({
+            zoneId: zone.zoneId,
+            zoneName: zone.zoneName,
+            availability: timeSlots
+        });
+    }
+
+    res.status(200).json(resultZones);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /reservations/availability
 app.get("/reservations/availability", async (req, res, next) => {
   const { date, parkingSiteId, floorId, type } = req.query;
 

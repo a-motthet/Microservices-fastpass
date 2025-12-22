@@ -44,10 +44,10 @@ app.get("/slots", async (req, res) => {
   console.log(`[SlotSvc] GET /slots query:`, req.query);
 
   try {
-    // 🔽 แก้ไข: ลบ slot_location_id ออก เพราะ id คือรหัส 11 หลักแล้ว 🔽
+    // 🔽 แก้ไข: เพิ่ม zone_id และ join zones 🔽
     let query = supabase
       .from("slots")
-      .select("id, name, floor_id, details, status, parking_site_id");
+      .select("id, name, floor_id, details, status, parking_site_id, zone_id, zones(name)");
 
     // กรองตามสาขา
     if (parkingSiteId) {
@@ -104,6 +104,62 @@ app.post("/slots", async (req, res, next) => {
     res.status(201).json(result);
   } catch (error) {
     logger.error(`[SlotSvc] Error in POST /slots: ${error.message}`);
+    next(error);
+  }
+});
+
+// GET /sites/:id/structure
+app.get('/sites/:id/structure', async (req, res, next) => {
+  const { id } = req.params;
+  logger.info(`[SlotSvc] GET /sites/${id}/structure`);
+
+  try {
+    // 1. ดึงข้อมูล Flat จาก View
+    const { data: rows, error } = await supabase
+      .from('site_structure_view')
+      .select('*')
+      .eq('site_id', id);
+
+    if (error) throw error;
+    if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: "Site not found or no structure defined." });
+    }
+
+    // 2. แปลง Flat Data -> Nested JSON (Building -> Floor -> Zone)
+    const siteStructure = {
+      id: rows[0]?.site_id,
+      name: rows[0]?.site_name,
+      buildings: []
+    };
+
+    // Helper เพื่อหา object ใน array
+    const findOrAdd = (array, id, name, template) => {
+      let item = array.find(x => x.id === id);
+      if (!item) {
+        item = { id, name, ...template };
+        array.push(item);
+      }
+      return item;
+    };
+
+    rows.forEach(row => {
+      // Level 1: Building
+      const building = findOrAdd(siteStructure.buildings, row.building_id, row.building_name, { floors: [] });
+      
+      // Level 2: Floor
+      const floor = findOrAdd(building.floors, row.floor_id, row.floor_name, { zones: [] });
+      
+      // Level 3: Zone
+      floor.zones.push({
+        id: row.zone_id,
+        name: row.zone_name,
+        supportedVehicleTypes: row.supported_vehicle_types // [0, 1] or similar
+      });
+    });
+
+    res.json(siteStructure);
+  } catch (error) {
+    logger.error(`[SlotSvc] Error in GET /sites/${id}/structure: ${error.message}`);
     next(error);
   }
 });

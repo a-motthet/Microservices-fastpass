@@ -408,6 +408,39 @@ CREATE TABLE IF NOT EXISTS "public"."slots" (
 ALTER TABLE "public"."slots" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."zones" (
+    "id" "text" NOT NULL,
+    "floor_id" "text" NOT NULL,
+    "name" "text" NOT NULL
+);
+
+
+ALTER TABLE "public"."zones" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."site_structure_view" AS
+ SELECT "s"."id" AS "site_id",
+    "s"."name" AS "site_name",
+    "b"."id" AS "building_id",
+    "b"."name" AS "building_name",
+    "f"."id" AS "floor_id",
+    "f"."name" AS "floor_name",
+    "f"."level_order",
+    "z"."id" AS "zone_id",
+    "z"."name" AS "zone_name",
+    "array_agg"(DISTINCT "sl"."vehicle_type_code") AS "supported_vehicle_types"
+   FROM (((("public"."parking_sites" "s"
+     JOIN "public"."buildings" "b" ON (("s"."id" = "b"."parking_site_id")))
+     JOIN "public"."floors" "f" ON (("b"."id" = "f"."building_id")))
+     JOIN "public"."zones" "z" ON (("f"."id" = "z"."floor_id")))
+     JOIN "public"."slots" "sl" ON (("z"."id" = "sl"."zone_id")))
+  GROUP BY "s"."id", "s"."name", "b"."id", "b"."name", "f"."id", "f"."name", "f"."level_order", "z"."id", "z"."name"
+  ORDER BY "s"."id", "f"."level_order", "z"."name";
+
+
+ALTER VIEW "public"."site_structure_view" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."snapshots" (
     "aggregate_id" "uuid" NOT NULL,
     "snapshot_data" "jsonb" NOT NULL,
@@ -430,16 +463,6 @@ CREATE TABLE IF NOT EXISTS "public"."users" (
 
 
 ALTER TABLE "public"."users" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."zones" (
-    "id" "text" NOT NULL,
-    "floor_id" "text" NOT NULL,
-    "name" "text" NOT NULL
-);
-
-
-ALTER TABLE "public"."zones" OWNER TO "postgres";
 
 
 ALTER TABLE ONLY "public"."event_store" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."event_store_id_seq"'::"regclass");
@@ -891,6 +914,18 @@ GRANT ALL ON TABLE "public"."slots" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."zones" TO "anon";
+GRANT ALL ON TABLE "public"."zones" TO "authenticated";
+GRANT ALL ON TABLE "public"."zones" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."site_structure_view" TO "anon";
+GRANT ALL ON TABLE "public"."site_structure_view" TO "authenticated";
+GRANT ALL ON TABLE "public"."site_structure_view" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."snapshots" TO "anon";
 GRANT ALL ON TABLE "public"."snapshots" TO "authenticated";
 GRANT ALL ON TABLE "public"."snapshots" TO "service_role";
@@ -900,12 +935,6 @@ GRANT ALL ON TABLE "public"."snapshots" TO "service_role";
 GRANT ALL ON TABLE "public"."users" TO "anon";
 GRANT ALL ON TABLE "public"."users" TO "authenticated";
 GRANT ALL ON TABLE "public"."users" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."zones" TO "anon";
-GRANT ALL ON TABLE "public"."zones" TO "authenticated";
-GRANT ALL ON TABLE "public"."zones" TO "service_role";
 
 
 
