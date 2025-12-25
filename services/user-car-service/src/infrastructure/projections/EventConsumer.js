@@ -100,17 +100,13 @@ export class EventConsumer {
 
       case "ParkingStatusUpdatedEvent":
         await this.reservationProjection.handleParkingStatusUpdated(event_data);
-        await this.reservationHistoryProjection.handleReservationEvent(
-          eventMessage
-        );
+        // await this.reservationHistoryProjection.handleReservationEvent(eventMessage);
         await this.historyProjection.handleParkingStatusUpdated(event_data);
         break;
 
       case "ReservationCreatedEvent":
         await this.reservationProjection.handleReservationCreated(event_data);
-        await this.reservationHistoryProjection.handleReservationEvent(
-          eventMessage
-        );
+        // await this.reservationHistoryProjection.handleReservationEvent(eventMessage);
         await this.historyProjection.handleReservationCreated(event_data);
         break;
 

@@ -74,8 +74,8 @@ export class SupabaseEventStore {
          delete eventData.vehicle_type;
          delete eventData.status; 
          delete eventData.carId;
-         delete eventData.floorId; 
-         delete eventData.parkingSiteId; 
+         // delete eventData.floorId;  <-- KEPT
+         // delete eventData.parkingSiteId; <-- KEPT
          delete eventData.reservedAt; 
          
          // Ensure vehicleTypeCode is present (it is in the event object)

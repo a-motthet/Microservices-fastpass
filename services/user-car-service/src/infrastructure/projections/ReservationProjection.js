@@ -17,9 +17,11 @@ export class ReservationProjection {
     
     // Debug: เช็กว่าค่ามาครบไหม
     // Debug: เช็กว่าค่ามาครบไหม
+    console.log("[ReservationProjection] Payload:", JSON.stringify(event, null, 2));
+
     if (!startDateLocal || !startTimeLocal || !timeZoneOffset) {
-        console.error("[ReservationProjection] MISSING TIME DATA in Event:", event);
-        return; // หยุดทำงานเพื่อไม่ให้ crash
+        console.error("[ReservationProjection] MISSING TIME DATA in Event:", { startDateLocal, startTimeLocal, timeZoneOffset });
+        // return; // Comment out temporarily to see if we can proceed or force error
     }
 
     try {

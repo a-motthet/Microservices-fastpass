@@ -7,19 +7,29 @@ export class UserProjection {
     this.supabase = supabaseClient;
   }
 
-  async handleEvent(event) {
-    if (event.eventType === "UserCreated") {
-      const { id, name, email } = event.data;
+  async handleUserCreated(eventData) {
+    // Adapter if needed, or just use eventData
+    const data = eventData;
+    // The previous code expected 'event.eventType' and 'event.data', but EventConsumer passes 'event_data' directly
+    // Let's assume eventData IS the user object or contains it.
+    // Looking at other handlers: handleReservationCreated(event_data)
+    // So here we should probably destructure data directly.
+    
+    // Safety check if eventData has a wrapped structure or is flat
+    const { id, name, email } = data;
+    if (!id) { 
+        console.warn("UserProjection: No ID found in event data", data);
+        return; 
+    }
       console.log(`📈 Projecting UserCreated: ${id}`);
       const { error } = await this.supabase.from("users").insert({
         id,
         name,
         email,
-        status: "ACTIVE",
+        status: "active",
         version: 1,
         updated_at: new Date(),
       });
       if (error) console.error("Error projecting UserCreated event:", error);
     }
-  }
 }

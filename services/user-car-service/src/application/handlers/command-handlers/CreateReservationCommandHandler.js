@@ -41,6 +41,7 @@ export class CreateReservationCommandHandler {
 
         // 4.2 ส่ง Event ไปที่ Broker (ทำหลังจาก Save สำเร็จ)
         for (const event of events) {
+          console.log(`[CreateReservationCommandHandler] Publishing event: ${event.constructor.name}`, JSON.stringify(event));
           await this.messageBroker.publishEvent(event);
         }
 
