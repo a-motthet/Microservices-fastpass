@@ -56,7 +56,17 @@ app.get("/slots", async (req, res) => {
 
     // กรองตามชั้น
     if (floorId) {
-      query = query.eq("floor_id", floorId);
+      let fIds = [];
+      if (Array.isArray(floorId)) {
+          fIds = floorId;
+      } else {
+          fIds = floorId.split(',');
+      }
+      fIds = fIds.map(f => f.trim()).filter(f => f); // Trim and remove empty
+      
+      if (fIds.length > 0) {
+          query = query.in("floor_id", fIds);
+      }
     }
 
     // กรองตามประเภทรถ (vehicle_type_code)

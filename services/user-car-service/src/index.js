@@ -352,7 +352,7 @@ app.post('/availability/summary', async (req, res, next) => {
     // เพื่อความง่าย: ดึง slot ทั้งหมดที่ available มาก่อน
     let slotsQuery = supabase
       .from('slots')
-      .select('zone_id, status, zones(name)') // Join to get Zone Name if possible
+      .select('id, zone_id, status, zones(name)') // Added 'id'
       .eq('parking_site_id', siteId)
       .eq('vehicle_type_code', vehicleTypeCode)
       .neq('status', 'maintenance'); // Count valid slots (available + occupied)
@@ -409,14 +409,16 @@ app.post('/availability/summary', async (req, res, next) => {
 
     let resQuery = supabase
       .from('reservations')
-      .select('slot_id') 
+      .select('slot_id, vehicle_type_code, status') 
       .eq('parking_site_id', siteId)
-      .eq('vehicle_type_code', vehicleTypeCode)
-      .neq('status', 'cancelled')
-      .neq('status', 'checked_out')
+      .in('status', ['pending', 'checked_in'])
       .lt('start_time', endOfDay)
       .gt('end_time', startOfDay);
 
+    if (vehicleTypeCode !== undefined) {
+        resQuery = resQuery.eq('vehicle_type_code', vehicleTypeCode);
+    }
+    
     if (floorId) {
         if (Array.isArray(floorId)) {
             if (!floorId.some(f => f.toUpperCase() === 'ALL')) {
@@ -538,7 +540,19 @@ app.post('/availability/summary', async (req, res, next) => {
       .gt("end_time", dayStart.toISOString())
       .in("status", ["pending", "checked_in"]);
 
-    if (floorId) query = query.eq("floor_id", floorId);
+    if (floorId) {
+        let fIds = [];
+        if (Array.isArray(floorId)) {
+            fIds = floorId;
+        } else {
+            fIds = floorId.split(',');
+        }
+        fIds = fIds.map(f => f.trim()).filter(f => f);
+        
+        if (fIds.length > 0) {
+            query = query.in("floor_id", fIds);
+        }
+    }
     const { data: bookedSlots, error } = await query;
     if (error) throw error;
 
@@ -673,7 +687,19 @@ app.get("/reservations/availability", async (req, res, next) => {
       .gt("end_time", dayStart.toISOString())
       .in("status", ["pending", "checked_in"]);
 
-    if (floorId) query = query.eq("floor_id", floorId);
+    if (floorId) {
+        let fIds = [];
+        if (Array.isArray(floorId)) {
+            fIds = floorId;
+        } else {
+            fIds = floorId.split(',');
+        }
+        fIds = fIds.map(f => f.trim()).filter(f => f);
+        
+        if (fIds.length > 0) {
+            query = query.in("floor_id", fIds);
+        }
+    }
     const { data: bookedSlots, error } = await query;
     if (error) throw error;
 
