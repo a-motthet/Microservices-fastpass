@@ -34,7 +34,8 @@ export class ActivityProjection {
       start_time: new Date(startISO).toISOString(),
       end_time: new Date(endISO).toISOString(),
       updated_at: new Date(),
-      vehicle_type: vehicleType || 'car' // 👈 Add vehicle_type
+      vehicle_type: vehicleType || 'car', 
+      vehicle_type_code: event.vehicleTypeCode !== undefined ? event.vehicleTypeCode : 1 // 👈 Add vehicle_type_code
     });
   }
 

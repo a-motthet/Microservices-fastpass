@@ -205,6 +205,33 @@ $$;
 
 ALTER FUNCTION "public"."save_events_and_update_version"("p_aggregate_id" "uuid", "p_expected_version" integer, "p_new_version" integer, "p_events" "jsonb", "p_latest_event_data" "jsonb") OWNER TO "postgres";
 
+
+CREATE OR REPLACE FUNCTION "public"."sync_vehicle_type_logic"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+BEGIN
+    -- กรณีที่ 1: ถ้ามีการส่ง Code (ตัวเลข) มา -> ให้แก้ Enum ตาม
+    IF NEW.vehicle_type_code IS NOT NULL THEN
+        IF NEW.vehicle_type_code = 0 THEN NEW.vehicle_type := 'motorcycle';
+        ELSIF NEW.vehicle_type_code = 1 THEN NEW.vehicle_type := 'car';
+        ELSIF NEW.vehicle_type_code = 2 THEN NEW.vehicle_type := 'ev';
+        END IF;
+    
+    -- กรณีที่ 2: ถ้าส่งแต่ Enum (ตัวหนังสือ) มา -> ให้แก้ Code ตาม
+    ELSIF NEW.vehicle_type IS NOT NULL THEN
+        IF NEW.vehicle_type = 'motorcycle' THEN NEW.vehicle_type_code := 0;
+        ELSIF NEW.vehicle_type = 'car' THEN NEW.vehicle_type_code := 1;
+        ELSIF NEW.vehicle_type = 'ev' THEN NEW.vehicle_type_code := 2;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."sync_vehicle_type_logic"() OWNER TO "postgres";
+
 SET default_tablespace = '';
 
 SET default_table_access_method = "heap";
@@ -213,7 +240,20 @@ SET default_table_access_method = "heap";
 CREATE TABLE IF NOT EXISTS "public"."buildings" (
     "id" "text" NOT NULL,
     "parking_site_id" "text" NOT NULL,
-    "name" "text" NOT NULL
+    "name" "text" NOT NULL,
+    "lat" double precision DEFAULT 0,
+    "lng" double precision DEFAULT 0,
+    "map_x" integer DEFAULT 0,
+    "map_y" integer DEFAULT 0,
+    "images" "text"[] DEFAULT '{}'::"text"[],
+    "allowed_user_types" "text"[] DEFAULT '{นศ.,บุคลากร}'::"text"[],
+    "price_per_hour" numeric DEFAULT 0,
+    "schedule_config" "jsonb" DEFAULT '[]'::"jsonb",
+    "open_time" time without time zone DEFAULT '08:00:00'::time without time zone,
+    "close_time" time without time zone DEFAULT '20:00:00'::time without time zone,
+    "price_info" "text" DEFAULT 'ฟรี'::"text",
+    "price_value" integer DEFAULT 0,
+    "user_types" "text" DEFAULT 'นศ., บุคลากร'::"text"
 );
 
 
@@ -295,7 +335,9 @@ CREATE TABLE IF NOT EXISTS "public"."parking_sites" (
     "description" "text",
     "timezone" "text" DEFAULT 'Asia/Bangkok'::"text",
     "timezone_offset" integer DEFAULT 420,
-    "status" "public"."site_status" DEFAULT 'active'::"public"."site_status" NOT NULL
+    "status" "public"."site_status" DEFAULT 'active'::"public"."site_status" NOT NULL,
+    "opening_time" time without time zone DEFAULT '08:00:00'::time without time zone,
+    "closing_time" time without time zone DEFAULT '20:00:00'::time without time zone
 );
 
 
@@ -452,6 +494,16 @@ CREATE TABLE IF NOT EXISTS "public"."snapshots" (
 ALTER TABLE "public"."snapshots" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."user_bookmarks" (
+    "user_id" "uuid" NOT NULL,
+    "building_id" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."user_bookmarks" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."users" (
     "id" "uuid" NOT NULL,
     "name" character varying,
@@ -547,6 +599,11 @@ ALTER TABLE ONLY "public"."snapshots"
 
 
 
+ALTER TABLE ONLY "public"."user_bookmarks"
+    ADD CONSTRAINT "user_bookmarks_pkey" PRIMARY KEY ("user_id", "building_id");
+
+
+
 ALTER TABLE ONLY "public"."users"
     ADD CONSTRAINT "users_email_key" UNIQUE ("email");
 
@@ -559,6 +616,10 @@ ALTER TABLE ONLY "public"."users"
 
 ALTER TABLE ONLY "public"."zones"
     ADD CONSTRAINT "zones_pkey" PRIMARY KEY ("id");
+
+
+
+CREATE INDEX "idx_buildings_lat_lng" ON "public"."buildings" USING "btree" ("lat", "lng");
 
 
 
@@ -579,6 +640,26 @@ CREATE INDEX "idx_reservations_site" ON "public"."reservations" USING "btree" ("
 
 
 CREATE INDEX "idx_reservations_slot" ON "public"."reservations" USING "btree" ("slot_id");
+
+
+
+CREATE INDEX "idx_reservations_time_overlap" ON "public"."reservations" USING "btree" ("parking_site_id", "start_time", "end_time") WHERE ("status" <> ALL (ARRAY['cancelled'::"public"."reservation_status", 'checked_out'::"public"."reservation_status"]));
+
+
+
+CREATE INDEX "idx_user_bookmarks_user_id" ON "public"."user_bookmarks" USING "btree" ("user_id");
+
+
+
+CREATE OR REPLACE TRIGGER "trg_sync_vehicle_cars" BEFORE INSERT OR UPDATE ON "public"."cars" FOR EACH ROW EXECUTE FUNCTION "public"."sync_vehicle_type_logic"();
+
+
+
+CREATE OR REPLACE TRIGGER "trg_sync_vehicle_reservations" BEFORE INSERT OR UPDATE ON "public"."reservations" FOR EACH ROW EXECUTE FUNCTION "public"."sync_vehicle_type_logic"();
+
+
+
+CREATE OR REPLACE TRIGGER "trg_sync_vehicle_slots" BEFORE INSERT OR UPDATE ON "public"."slots" FOR EACH ROW EXECUTE FUNCTION "public"."sync_vehicle_type_logic"();
 
 
 
@@ -639,6 +720,16 @@ ALTER TABLE ONLY "public"."slots"
 
 ALTER TABLE ONLY "public"."slots"
     ADD CONSTRAINT "slots_zone_id_fkey" FOREIGN KEY ("zone_id") REFERENCES "public"."zones"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."user_bookmarks"
+    ADD CONSTRAINT "user_bookmarks_building_id_fkey" FOREIGN KEY ("building_id") REFERENCES "public"."buildings"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."user_bookmarks"
+    ADD CONSTRAINT "user_bookmarks_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
 
 
@@ -821,6 +912,12 @@ GRANT ALL ON FUNCTION "public"."save_events_and_update_version"("p_aggregate_id"
 
 
 
+GRANT ALL ON FUNCTION "public"."sync_vehicle_type_logic"() TO "anon";
+GRANT ALL ON FUNCTION "public"."sync_vehicle_type_logic"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."sync_vehicle_type_logic"() TO "service_role";
+
+
+
 
 
 
@@ -929,6 +1026,12 @@ GRANT ALL ON TABLE "public"."site_structure_view" TO "service_role";
 GRANT ALL ON TABLE "public"."snapshots" TO "anon";
 GRANT ALL ON TABLE "public"."snapshots" TO "authenticated";
 GRANT ALL ON TABLE "public"."snapshots" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."user_bookmarks" TO "anon";
+GRANT ALL ON TABLE "public"."user_bookmarks" TO "authenticated";
+GRANT ALL ON TABLE "public"."user_bookmarks" TO "service_role";
 
 
 

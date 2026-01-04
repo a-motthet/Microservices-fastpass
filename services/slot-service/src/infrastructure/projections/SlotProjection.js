@@ -39,7 +39,8 @@ export class SlotProjection {
         floor_id: floorId,
         zone_id: zoneId,
         slot_number: slotNumber,
-        vehicle_type: eventData.vehicleType || "car", // 👈 บันทึก Vehicle Type
+        vehicle_type: eventData.vehicleType || "car", 
+        vehicle_type_code: eventData.vehicleTypeCode !== undefined ? eventData.vehicleTypeCode : 1, // 👈 บันทึก Vehicle Type Code
         
         version: 1,                     // Version เริ่มต้น
         // updated_at: new Date()       // (Optional) ถ้ามีคอลัมน์นี้

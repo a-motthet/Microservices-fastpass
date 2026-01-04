@@ -23,6 +23,10 @@ const services = [
     route: "/slots",
     target: process.env.SLOT_SERVICE_URL || "http://localhost:3006",
   },
+  {
+    route: "/sites",
+    target: process.env.SLOT_SERVICE_URL || "http://localhost:3006",
+  },
   // เพิ่ม Service อื่นๆ ที่นี่
 ];
 

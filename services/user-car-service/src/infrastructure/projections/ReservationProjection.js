@@ -52,8 +52,9 @@ export class ReservationProjection {
           reserved_at: reservedAtUTC,
           version: 1,
           updated_at: new Date(),
-          vehicle_type: event.vehicleType || 'car', // 👈 New Column
-          car_id: event.carId || null               // 👈 New Column
+          vehicle_type: event.vehicleType || 'car', 
+          car_id: event.carId || null,
+          vehicle_type_code: event.vehicleTypeCode !== undefined ? event.vehicleTypeCode : 1 // 👈 Include vehicle_type_code
         });
 
       if (error) throw error;
