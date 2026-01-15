@@ -2,6 +2,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import cors from "cors";
 import express from "express";
 import { ApolloServer } from "apollo-server-express";
 
@@ -12,6 +13,11 @@ import apiRoutes from "./routes/index.js";
 
 const app = express();
 const PORT = process.env.GATEWAY_PORT || 4000;
+
+app.use(cors({
+  origin: "http://localhost:4200",
+  credentials: true
+}));
 
 app.use(express.json());
 

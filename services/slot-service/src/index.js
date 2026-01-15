@@ -1,6 +1,7 @@
 // /services/slot-service/src/index.js
 
 import express from "express";
+import cors from "cors"; // Import cors
 import { createClient } from "@supabase/supabase-js";
 
 // Infrastructure
@@ -18,6 +19,15 @@ const logger = createLogger('slot-service');
 
 const app = express();
 app.use(express.json());
+
+// CORS Configuration (Pattern from user-car-service)
+const corsOptions = {
+  origin: "http://localhost:4200",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
 
 // --- Setup Dependencies ---
 const supabase = createClient(

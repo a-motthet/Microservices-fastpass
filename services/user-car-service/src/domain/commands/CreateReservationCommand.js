@@ -8,8 +8,8 @@ export class CreateReservationCommand {
       startTimeStamp, startDateLocal, startTimeLocal,
       endTimeStamp, endDateLocal, endTimeLocal,
       timeZoneOffset,
-      vehicleType, // 👈 New Input
-      carId        // 👈 New Input
+      vehicleType,
+      carId
     } = data;
 
     // 1. Validation
@@ -20,7 +20,7 @@ export class CreateReservationCommand {
       throw new Error("Missing required date/time components.");
     }
 
-    // 2. Assign to 'this' (Flat Structure)
+    // 2. Assign
     this.userId = userId;
     this.slotId = slotId;
     this.parkingSiteId = parkingSiteId;
@@ -36,8 +36,8 @@ export class CreateReservationCommand {
     this.endTimeLocal = endTimeLocal;
     
     this.timeZoneOffset = timeZoneOffset;
-    this.vehicleType = vehicleType || 'car'; // 👈 New Property
-    this.carId = carId || null;              // 👈 New Property
-    this.vehicleTypeCode = data.vehicleTypeCode || 1; // Default to CAR (1)
+    this.vehicleType = vehicleType || 'car';
+    this.carId = carId || null;
+    this.vehicleTypeCode = data.vehicleTypeCode || 1;
   }
 }

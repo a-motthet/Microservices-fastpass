@@ -2,8 +2,8 @@
 
 export class UpdateParkingStatusCommand {
   /**
-   * @param {string} reservationId - ID ของการจองที่ต้องการอัปเดต
-   * @param {string} newStatus - สถานะใหม่ เช่น 'checked_in', 'checked_out'
+   * @param {string} reservationId
+   * @param {string} newStatus
    */
   constructor(reservationId, newStatus) {
     if (!reservationId || !newStatus) {
